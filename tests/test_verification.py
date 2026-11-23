@@ -27,6 +27,16 @@ def test_verifier_accepts_real_quote_and_supports_numeric_recommendation():
     {"fact": "Ежедневная встреча длится 45 минут."},
     {"fact": "Ссылка на пример https://example.invalid"},
     {"fact": "Подставная сноска [S1]"},
+    {"fact": "``` Фрагмент без видимой сноски"},
+    {"fact": "### Заголовок, созданный моделью"},
 ])
 def test_verifier_detects_unsupported_locator_quote_number_or_link(overrides):
     assert verify(draft(**overrides), CHOICES, "Как провести встречу?")
+
+
+def test_local_policy_claims_cannot_be_presented_as_steps_or_limitations():
+    assert verify(draft(steps=[{"text": "УрФУ требует проводить встречу.", "sources": ["S1"]}]), CHOICES, "Как провести встречу?")
+    candidate = draft().model_copy(update={"limits": "В УрФУ обязательно проводить встречу."})
+    assert verify(candidate, CHOICES, "Как провести встречу?")
+    clarification = draft().model_copy(update={"limits": "Уточните у преподавателя, требует ли УрФУ проводить встречу."})
+    assert not verify(clarification, CHOICES, "Как провести встречу?")

@@ -5,12 +5,17 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.knowledge import Chunk, Knowledge
-from app.retrieval import institutional_request
+from app.retrieval import CAMPUS, institutional_request
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=700)]
 Label = Annotated[str, StringConstraints(pattern=r"^S(?:[1-9]|1[0-2])$")]
 NUMBER = re.compile(r"\d+(?:[.,–—-]\d+)*")
 UNTRUSTED_MARKUP = re.compile(r"https?\s*:|www\.|\[S\s*\d+\]|\[[^\]]*\]\s*\(|<[^>]+>", re.I)
+MARKDOWN_BLOCK = re.compile(r"^(?:#{1,6}\s|>|[-*+]\s|\d+[.)]\s)|`{3,}|~{3,}")
+LOCAL_POLICY_ASSERTION = re.compile(
+    r"(?:^|[.!?;]\s+)(?:в\s+)?" + CAMPUS + r"\s+(?:требу(?:ет|ют)|обязательн\w*|утвердил\w*|предписыва\w*)\b",
+    re.I,
+)
 
 
 class OutputModel(BaseModel):
@@ -50,7 +55,9 @@ def numbers(text: str) -> set[str]:
 
 
 def safe_prose(text: str) -> bool:
-    return not UNTRUSTED_MARKUP.search(text) and all(char in "\t\r\n" or not unicodedata.category(char).startswith("C") for char in text)
+    return (not UNTRUSTED_MARKUP.search(text)
+            and not MARKDOWN_BLOCK.search(text.lstrip())
+            and all(char in "\t\r\n" or not unicodedata.category(char).startswith("C") for char in text))
 
 
 def verify(draft: Draft, choices: dict[str, Chunk], user_text: str, knowledge: Knowledge | None = None) -> list[str]:
@@ -60,7 +67,9 @@ def verify(draft: Draft, choices: dict[str, Chunk], user_text: str, knowledge: K
     if not draft.facts:
         issues.append("Нет ни одного утверждения с указанием доказательства.")
     if not safe_prose(draft.limits):
-        issues.append("Убери разметку ссылок из поля limits.")
+        issues.append("Убери ссылки и блочную разметку из поля limits.")
+    if LOCAL_POLICY_ASSERTION.search(draft.limits):
+        issues.append("В поле limits опиши недостающие сведения, без утверждений о локальных правилах.")
     user_numbers = numbers(user_text)
     for index, fact in enumerate(draft.facts, 1):
         supported = set()
@@ -79,10 +88,12 @@ def verify(draft: Draft, choices: dict[str, Chunk], user_text: str, knowledge: K
         ):
             issues.append(f"Утверждение {index}: для локальных требований УрФУ нужен официальный локальный документ.")
         if not safe_prose(fact.text):
-            issues.append(f"Утверждение {index}: удали внешние ссылки, HTML и ручные сноски.")
+            issues.append(f"Утверждение {index}: удали внешние ссылки, HTML, ручные сноски и блочную разметку.")
     for index, step in enumerate(draft.steps, 1):
         if not all(label in choices for label in step.sources) or not safe_prose(step.text):
-            issues.append(f"Шаг {index}: используй только идентификаторы выданных источников в поле sources.")
+            issues.append(f"Шаг {index}: используй обычный текст и идентификаторы из переданных источников.")
+        if LOCAL_POLICY_ASSERTION.search(step.text):
+            issues.append(f"Шаг {index}: локальные требования указывай в facts с официальным источником.")
     return issues
 
 

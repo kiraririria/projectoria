@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 
 from app.config import ROOT, Settings
 from app.knowledge import Knowledge, load_knowledge, load_vectors
@@ -15,10 +16,12 @@ from app.openrouter import OpenRouter, ProviderError
 from app.pipeline import Pipeline
 from app.retrieval import Retriever
 from app.schemas import MAX_BODY_BYTES, ChatRequest
+from app.security import SecurityHeaders, require_chat_origin
 
 logger = logging.getLogger(__name__)
 STATIC = ROOT / "app/static"
 MAX_REQUEST_SECONDS = 52
+MAX_BODY_READ_SECONDS = 5
 
 
 async def read_chat(request: Request) -> ChatRequest:
@@ -32,10 +35,16 @@ async def read_chat(request: Request) -> ChatRequest:
         if int(size) > MAX_BODY_BYTES:
             raise HTTPException(413, "Запрос слишком большой.")
     body = bytearray()
-    async for part in request.stream():
-        if len(body) + len(part) > MAX_BODY_BYTES:
-            raise HTTPException(413, "Запрос слишком большой.")
-        body.extend(part)
+    try:
+        async with asyncio.timeout(MAX_BODY_READ_SECONDS):
+            async for part in request.stream():
+                if len(body) + len(part) > MAX_BODY_BYTES:
+                    raise HTTPException(413, "Запрос слишком большой.")
+                body.extend(part)
+    except TimeoutError:
+        raise HTTPException(408, "Запрос передавался слишком долго. Попробуйте ещё раз.") from None
+    except ClientDisconnect:
+        raise HTTPException(400, "Передача запроса была прервана.") from None
     try:
         return ChatRequest.model_validate_json(body, strict=True)
     except ValidationError as exc:
@@ -52,6 +61,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                knowledge: Knowledge | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     application = FastAPI(title="Проектория", docs_url=None, redoc_url=None, openapi_url=None)
+    application.add_middleware(SecurityHeaders)
 
     @lru_cache(maxsize=1)
     def load_pipeline():
@@ -94,17 +104,25 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
 
     @application.post("/api/chat")
     async def chat(request: Request):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + MAX_REQUEST_SECONDS
+        require_chat_origin(request)
         chat_request = await read_chat(request)
         if not settings.api_key:
             raise HTTPException(503, "Модель пока не подключена. Материалы доступны в базе знаний.")
-        service = await asyncio.to_thread(pipeline)
+        try:
+            async with asyncio.timeout_at(deadline):
+                service = await asyncio.to_thread(pipeline)
+        except TimeoutError:
+            raise HTTPException(503, "База знаний загружается слишком долго. Попробуйте ещё раз.") from None
 
         async def stream():
-            router = OpenRouter(settings, transport)
             try:
-                async with asyncio.timeout(MAX_REQUEST_SECONDS):
-                    async for name, data in service.events(chat_request, router):
-                        yield encode_event(name, data)
+                async with asyncio.timeout_at(deadline):
+                    router = OpenRouter(settings, transport)
+                    async with router.http:
+                        async for name, data in service.events(chat_request, router):
+                            yield encode_event(name, data)
             except ProviderError as exc:
                 yield encode_event("error", {"message": str(exc)})
             except TimeoutError:
@@ -112,11 +130,9 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
             except Exception as exc:
                 logger.error("Chat failed (%s)", type(exc).__name__)
                 yield encode_event("error", {"message": "Не удалось подготовить ответ. Попробуйте ещё раз."})
-            finally:
-                await router.http.aclose()
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={
-            "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no",
+            "X-Accel-Buffering": "no",
         })
 
     @application.get("/", include_in_schema=False)

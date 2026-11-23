@@ -134,7 +134,10 @@ function renderAnswer(result) {
   mark.append(icon("compass"));
   heading.append(mark, element("span", "", "Проектория"));
   const rich = element("div", "rich");
-  const sources = Array.isArray(result.sources) ? result.sources : [];
+  const sources = Array.isArray(result.sources) ? result.sources.filter((source) =>
+    typeof source?.id === "string" && /^[a-z0-9-]+$/.test(source.id)
+    && typeof source.label === "string" && /^S\d+$/.test(source.label)
+    && typeof source.title === "string" && typeof source.section === "string") : [];
   const citationButtons = new Map(sources.map((source) => [source.label, () => citation(source)]));
   rich.append(renderMarkdown(result.answer, citationButtons));
   content.append(heading, rich);
@@ -146,13 +149,14 @@ function renderAnswer(result) {
     content.append(sourceList);
   }
 
-  for (const warning of result.retrieval?.warnings ?? []) {
+  const warnings = result.retrieval?.warnings;
+  for (const warning of Array.isArray(warnings) ? warnings : []) {
     if (typeof warning === "string") content.append(notice(warning));
   }
   const meta = element("div", "reply-meta");
   if (result.retrieval?.mode === "hybrid") meta.append(element("span", "", "Гибридный поиск"));
   if (result.retrieval?.mode === "lexical") meta.append(element("span", "", "Лексический поиск"));
-  if (result.grounded && sources.length) meta.append(element("span", "", "Ссылки сверены"));
+  if (result.grounded === true && sources.length) meta.append(element("span", "", "Ссылки сверены"));
   const copy = button("text-button", "Копировать", async () => {
     try {
       await navigator.clipboard.writeText(result.answer);
@@ -193,10 +197,21 @@ function sourceButton(source, fromLibrary = false) {
 }
 
 async function responseError(response) {
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    const seconds = /^\d+$/.test(retryAfter ?? "") ? Number(retryAfter) : Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000);
+    let advice = "Попробуйте чуть позже.";
+    if (Number.isSafeInteger(seconds) && seconds > 0) {
+      const useMinutes = seconds >= 60;
+      const delay = new Intl.NumberFormat("ru", { style: "unit", unit: useMinutes ? "minute" : "second", unitDisplay: "long" })
+        .format(useMinutes ? Math.ceil(seconds / 60) : seconds);
+      advice = `Повторите запрос через ${delay}.`;
+    }
+    return new Error(`Сервис получает слишком много запросов. ${advice}`);
+  }
   const data = await response.json().catch(() => null);
   if (typeof data?.detail === "string") return new Error(data.detail);
   if (response.status === 413 || response.status === 422) return new Error("Проверьте длину вопроса и попробуйте снова.");
-  if (response.status === 429) return new Error("Сервис получает слишком много запросов. Попробуйте чуть позже.");
   return new Error("Сервис временно недоступен. Попробуйте ещё раз.");
 }
 
@@ -309,9 +324,10 @@ function preparePanel(view, title, back = false) {
 }
 
 function originalLink(url) {
+  if (typeof url !== "string") return null;
   try {
     const href = new URL(url);
-    if (href.protocol !== "https:" && href.protocol !== "http:") return null;
+    if (href.protocol !== "https:" || href.username || href.password) return null;
     const link = element("a", "panel-link", "Открыть оригинал");
     link.href = href.href;
     link.target = "_blank";
@@ -331,9 +347,9 @@ async function fetchData(url) {
 
 function excerptWithEvidence(source) {
   const excerpt = element("div", "excerpt");
-  const text = source.excerpt || "";
+  const text = source.excerpt;
   const ranges = [];
-  for (const quote of source.evidence ?? []) {
+  for (const quote of Array.isArray(source.evidence) ? source.evidence : []) {
     if (typeof quote !== "string" || !quote.trim()) continue;
     const pattern = quote.trim().split(/\s+/u)
       .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[её]/giu, "[её]"))
@@ -361,7 +377,7 @@ async function openSource(source, fromLibrary = false) {
   const revision = preparePanel("source", source.title || "Фрагмент источника", fromLibrary);
   backButton.onclick = () => openLibrary(false, selected);
 
-  if (!source.excerpt) {
+  if (typeof source.excerpt !== "string" || !source.excerpt) {
     panelBody.append(element("p", "panel-empty", "Загружаю фрагмент…"));
     try {
       source = await fetchData(`/api/sources/${encodeURIComponent(source.id)}`);
@@ -375,7 +391,7 @@ async function openSource(source, fromLibrary = false) {
   }
   if (panelRevision !== revision) return;
   panelTitle.textContent = source.title;
-  const meta = [source.publisher, source.version].filter(Boolean).join(" · ");
+  const meta = [source.publisher, source.version].filter((value) => typeof value === "string" && value).join(" · ");
   panelBody.replaceChildren();
   if (meta) panelBody.append(element("p", "panel-meta", meta));
   if (source.section) panelBody.append(element("h3", "excerpt-title", source.section));
