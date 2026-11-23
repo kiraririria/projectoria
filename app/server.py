@@ -82,6 +82,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         return {
             "status": "ok", "documents": len(service.knowledge.documents), "chunks": len(service.knowledge.chunks),
             "generation_configured": bool(settings.api_key), "semantic_index": bool(service.retriever.vectors),
+            "chat_model": settings.chat_model,
         }
 
     @application.get("/api/documents")
@@ -121,7 +122,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                 async with asyncio.timeout_at(deadline):
                     router = OpenRouter(settings, transport)
                     async with router.http:
-                        async for name, data in service.events(chat_request, router):
+                        async for name, data in service.events(chat_request, router, deadline):
                             yield encode_event(name, data)
             except ProviderError as exc:
                 yield encode_event("error", {"message": str(exc)})

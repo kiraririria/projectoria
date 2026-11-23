@@ -1,42 +1,33 @@
 import pytest
+from pydantic import ValidationError
 
 from app.knowledge import Chunk
-from app.verify import Draft, verify
+from app.verify import Draft, source_passages, verify
 
 
-QUOTE = "Событие ограничено 15 минутами."
-CHOICES = {"S1": Chunk("scrum--daily-scrum", "scrum", "Daily Scrum", QUOTE)}
+TEXT = "Событие ограничено 15 минутами.\n\nDevelopers выбирают формат встречи."
+CHUNK = Chunk("scrum--daily-scrum", "scrum", "Daily Scrum", TEXT)
 
 
-def draft(fact="Ежедневная встреча длится до 15 минут.", identifier="S1", quote=QUOTE, steps=()):
-    return Draft.model_validate({
-        "status": "answered",
-        "facts": [{"text": fact, "evidence": [{"id": identifier, "quote": quote}]}],
-        "steps": list(steps),
-    })
+def test_verifier_resolves_only_passages_provided_to_model():
+    passages = source_passages([CHUNK])
+    draft = Draft(status="answered", passages=["S1.2", "S1.1"])
+    assert [part.text for part in verify(draft, passages)] == [
+        "Developers выбирают формат встречи.", "Событие ограничено 15 минутами.",
+    ]
 
 
-def test_verifier_accepts_real_quote_and_supports_numeric_recommendation():
-    proposal = {"text": "Начните с 2 вопросов о движении к цели.", "sources": ["S1"]}
-    assert not verify(draft(steps=[proposal]), CHOICES, "Как провести встречу?")
-
-
-@pytest.mark.parametrize("overrides", [
-    {"identifier": "S12"},
-    {"quote": "По пятницам нужна другая встреча."},
-    {"fact": "Ежедневная встреча длится 45 минут."},
-    {"fact": "Ссылка на пример https://example.invalid"},
-    {"fact": "Подставная сноска [S1]"},
-    {"fact": "``` Фрагмент без видимой сноски"},
-    {"fact": "### Заголовок, созданный моделью"},
+@pytest.mark.parametrize(("status", "ids"), [
+    ("answered", []),
+    ("answered", ["S2.1"]),
+    ("answered", ["S1.1", "S1.1"]),
+    ("insufficient", ["S1.1"]),
+    ("unrelated", ["S1.1"]),
 ])
-def test_verifier_detects_unsupported_locator_quote_number_or_link(overrides):
-    assert verify(draft(**overrides), CHOICES, "Как провести встречу?")
+def test_verifier_rejects_invalid_selection(status, ids):
+    assert verify(Draft(status=status, passages=ids), source_passages([CHUNK])) is None
 
 
-def test_local_policy_claims_cannot_be_presented_as_steps_or_limitations():
-    assert verify(draft(steps=[{"text": "УрФУ требует проводить встречу.", "sources": ["S1"]}]), CHOICES, "Как провести встречу?")
-    candidate = draft().model_copy(update={"limits": "В УрФУ обязательно проводить встречу."})
-    assert verify(candidate, CHOICES, "Как провести встречу?")
-    clarification = draft().model_copy(update={"limits": "Уточните у преподавателя, требует ли УрФУ проводить встречу."})
-    assert not verify(clarification, CHOICES, "Как провести встречу?")
+def test_provider_cannot_include_its_own_claims_in_the_answer():
+    with pytest.raises(ValidationError):
+        Draft.model_validate({"status": "answered", "passages": ["S1.1"], "answer": "Встреча длится 45 минут."})

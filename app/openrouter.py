@@ -10,9 +10,14 @@ from app.knowledge import unit_vector
 logger = logging.getLogger(__name__)
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 PROVIDER_PRIVACY = {"data_collection": "deny"}
+TRANSIENT_STATUS = {408, 500, 502, 503, 504, 520, 522, 524, 529}
 
 
 class ProviderError(Exception):
+    pass
+
+
+class TemporaryProviderError(ProviderError):
     pass
 
 
@@ -34,7 +39,8 @@ class OpenRouter:
     async def post(self, path: str, payload: dict, timeout: float) -> dict:
         try:
             async with asyncio.timeout(timeout):
-                async with self.http.stream("POST", path, json=payload, timeout=timeout) as response:
+                limits = httpx.Timeout(timeout, connect=min(4.0, timeout))
+                async with self.http.stream("POST", path, json=payload, timeout=limits) as response:
                     response.raise_for_status()
                     body = bytearray()
                     async for part in response.aiter_bytes(chunk_size=64 * 1024):
@@ -52,13 +58,17 @@ class OpenRouter:
                 raise ProviderError("Сервис генерации временно недоступен. Попробуйте позже.") from None
             if status == 429:
                 raise ProviderError("Сервис перегружен. Попробуйте через минуту.") from None
+            if status in TRANSIENT_STATUS:
+                raise TemporaryProviderError("OpenRouter временно недоступен.") from None
             raise ProviderError("OpenRouter не смог обработать запрос. Попробуйте позже.") from None
         except (httpx.TimeoutException, TimeoutError):
-            raise ProviderError("OpenRouter отвечает слишком долго. Попробуйте ещё раз.") from None
+            raise TemporaryProviderError("OpenRouter отвечает слишком долго.") from None
+        except httpx.TransportError:
+            raise TemporaryProviderError("Не удалось связаться с OpenRouter.") from None
         except (httpx.HTTPError, ValueError, RecursionError):
             raise ProviderError("Не удалось получить ответ от OpenRouter. Попробуйте позже.") from None
 
-    async def embed(self, texts: list[str], *, timeout: float = 5) -> list[tuple[float, ...]]:
+    async def embed(self, texts: list[str], *, timeout: float = 3.5) -> list[tuple[float, ...]]:
         data = await self.post("embeddings", {
             "model": self.settings.embedding_model, "input": texts, "encoding_format": "float",
             "provider": PROVIDER_PRIVACY,
@@ -75,7 +85,7 @@ class OpenRouter:
         data = await self.post("rerank", {
             "model": self.settings.rerank_model, "query": query, "documents": documents,
             "top_n": len(documents), "provider": PROVIDER_PRIVACY,
-        }, 4)
+        }, 2.5)
         try:
             order = [item["index"] for item in data["results"]]
             if (not order or any(type(index) is not int or not 0 <= index < len(documents) for index in order)
@@ -85,14 +95,18 @@ class OpenRouter:
         except (ValueError, KeyError, TypeError):
             raise ProviderError("Реранкер OpenRouter недоступен.") from None
 
-    async def chat(self, messages: list[dict], *, timeout: float = 22) -> str:
-        data = await self.post("chat/completions", {
+    async def chat(self, messages: list[dict], *, timeout: float = 20) -> str:
+        payload = {
             "model": self.settings.chat_model,
             "messages": messages,
+            "temperature": 0,
             "max_tokens": self.settings.max_tokens,
             "response_format": {"type": "json_object"},
-            "provider": {"require_parameters": True, **PROVIDER_PRIVACY},
-        }, timeout)
+            "provider": {"require_parameters": True, "sort": "latency", **PROVIDER_PRIVACY},
+        }
+        if self.settings.chat_model.startswith("deepseek/deepseek-v4"):
+            payload["reasoning"] = {"enabled": False}
+        data = await self.post("chat/completions", payload, timeout)
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]

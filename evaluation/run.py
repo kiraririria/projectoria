@@ -101,6 +101,8 @@ def check_answer(client, case, payload):
     labels = {source["label"] for source in sources}
     source_ids = {source["id"] for source in sources}
     answer = payload["answer"]
+    answer_text = normalized(answer)
+    expected_status = case.get("expected_status")
     issues = []
     if not answer.strip():
         issues.append("Пустой ответ")
@@ -108,18 +110,28 @@ def check_answer(client, case, payload):
         issues.append("Повторяются метки или идентификаторы источников")
     if set(CITATION.findall(answer)) != labels:
         issues.append("Внутренние ссылки и карточки источников расходятся")
-    if bool(case["evidence"]) != payload["grounded"]:
+    if case["evidence"] and not payload["grounded"]:
+        issues.append("Вместо ответа по базе вернулись только связанные материалы или сообщение об ошибке")
+    if not case["evidence"] and expected_status != "project_details" and sources:
         issues.append("Статус наличия подтверждений отличается от ожидаемого")
+    if expected_status and payload.get("status") != expected_status:
+        issues.append(f"Ожидался статус {expected_status}, получен {payload.get('status')}")
+    for marker in case.get("required", []):
+        if normalized(marker) not in answer_text:
+            issues.append(f"Нет ожидаемого фрагмента ответа: {marker}")
     for marker in case.get("forbidden", []):
-        if marker.casefold() in answer.casefold():
+        if normalized(marker) in answer_text:
             issues.append(f"В ответ попала контрольная строка {marker}")
     for source in sources:
         detail = client.get(f"/api/sources/{quote(source['id'], safe='')}")
         record = detail.json() if detail.is_success else {}
         if not all(record.get(key) == source[key] for key in SOURCE_FIELDS):
             issues.append(f"Карточка {source['id']} не совпадает с записью в базе")
-        elif any(normalized(snippet) not in normalized(record["excerpt"]) for snippet in source.get("evidence", [])):
-            issues.append(f"Выдержка из {source['id']} не найдена в предоставленном фрагменте")
+        elif not source.get("evidence") or any(
+            normalized(snippet) not in normalized(record["excerpt"]) or normalized(snippet) not in answer_text
+            for snippet in source["evidence"]
+        ):
+            issues.append(f"Выдержка из {source['id']} отсутствует в ответе или в базе")
     missing = missing_groups(case, source_ids)
     if missing:
         issues.append(f"Отсутствуют нужные фрагменты: {missing}")

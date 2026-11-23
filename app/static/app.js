@@ -156,7 +156,7 @@ function renderAnswer(result) {
   const meta = element("div", "reply-meta");
   if (result.retrieval?.mode === "hybrid") meta.append(element("span", "", "Гибридный поиск"));
   if (result.retrieval?.mode === "lexical") meta.append(element("span", "", "Лексический поиск"));
-  if (result.grounded === true && sources.length) meta.append(element("span", "", "Ссылки сверены"));
+  if (result.grounded === true && sources.length) meta.append(element("span", "", "Цитаты из базы"));
   const copy = button("text-button", "Копировать", async () => {
     try {
       await navigator.clipboard.writeText(result.answer);

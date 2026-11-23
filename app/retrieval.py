@@ -28,14 +28,25 @@ ALIASES = (
     (r"\b(?:гитлаб\w*|gitlab)\b", "gitlab"),
     (r"\b(?:гит\w{0,2}|git)\b", "git"),
     (r"\b(?:дод|dod|definition of done|критери\w* готовност\w*)\b", "definition of done критерии готовности"),
+    (r"\b(?:с чего.{0,30}нача\w*|первые шаги|старт\w* проекта)\b", "планирование цель границы результат проекта"),
 )
-FOLLOW_UP = re.compile(r"^\s*(?:а\b|тогда\b|а если\b|в таком случае\b|покажи пример\b|что насч[её]т\b|"
-                       r"можешь уточнить\b|как это\b|какие из них\b|продолжи\b)", re.I)
+FOLLOW_UP = re.compile(
+    r"^\s*(?:а\s+)?(?:если\b|тогда\b|в таком случае\b|покажи пример\b|что насч[её]т\b|"
+    r"можешь уточнить\b|как (?:это|именно)\b|какие из них\b|кто за это\b|продолжи\b)",
+    re.I,
+)
+REACTION = re.compile(
+    r"[\s.!?…]+|(?:что|ч[её]|шо)\s+(?:это\s+)?за\s+(?:х[у*]йн[яю]|фигн[яю]|ерунд[ау]|бред|"
+    r"дичь|хрень|хрен[ья])[\s.!?…]*|(?:не понял[аи]?|не понимаю|непонятно|"
+    r"что это такое|что это было)[\s.!?…]*",
+    re.I,
+)
 CAMPUS = r"\b(?:урфу|ирит(?:\s*[-–]\s*ртф)?|уральск\w* федеральн\w* университет\w*)\b"
 INSTITUTION = re.compile(CAMPUS, re.I)
 LOCAL_POLICY = re.compile(
     r"локальн\w* (?:правил|требовани|регламент|положени)|регламент|приказ|дедлайн|"
-    r"(?:когда|срок\w*|формат\w*|дат[ауые]|время|времени|расписани\w*) .{0,35}(?:сда|защит)|"
+    r"(?:когда|срок\w*|формат\w*|дат[ауые]|время|времени|расписани\w*|"
+    r"(?:до )?какого числа|на какой неделе) .{0,65}(?:сда|защит|отч[её]т)|"
     r"(?:обязательн\w*|правил\w*|требовани\w*|требу\w*|утвержд\w*)\s+(?:(?:в|для)\s+)?" + CAMPUS + "|" +
     CAMPUS + r"\s+(?:обязательн|требуе?т|установил|утвердил|предписыва)", re.I,
 )
@@ -52,8 +63,9 @@ def expansions(text: str) -> list[str]:
 
 
 def previous_question(message: str, history: list[Message] | tuple[Message, ...]) -> str:
-    if FOLLOW_UP.search(message) or len(tokens(message)) < 4:
-        return next((msg.content[:700] for msg in reversed(history) if msg.role == "user"), "")
+    if FOLLOW_UP.search(message) and not REACTION.fullmatch(message):
+        return next((msg.content[:700] for msg in reversed(history)
+                     if msg.role == "user" and not REACTION.fullmatch(msg.content)), "")
     return ""
 
 

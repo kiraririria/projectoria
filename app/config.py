@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_CHAT_MODEL = "deepseek/deepseek-v4.1-flash"
 DEFAULT_EMBEDDING_MODEL = "baai/bge-m3"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/"
 
@@ -16,7 +16,7 @@ class Settings:
     chat_model: str = DEFAULT_CHAT_MODEL
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     rerank_model: str = ""
-    max_tokens: int = 2400
+    max_tokens: int = 320
     index_path: Path = ROOT / "knowledge/index.json"
     vectors_path: Path = ROOT / "knowledge/vectors.json"
 
