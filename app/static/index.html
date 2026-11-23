@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f8f7ff">
+  <meta name="description" content="Проектный ассистент для студентов УрФУ. Планирование, командная разработка и документация с проверяемыми источниками.">
+  <title>Проектория — ассистент по проектной работе</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/fonts/onest-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-compass" viewBox="0 0 24 24"><path d="m19 5-4.1 9.9L5 19l4.1-9.9L19 5Z"/><path d="m9.1 9.1 5.8 5.8"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M4 4v5h5"/><path d="M4.4 9a8.25 8.25 0 1 1 .55 7"/><path d="M12 7.75V12l2.75 1.75"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2zm0 13a2 2 0 0 1 2-2h13M8 7h7m-7 4h5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-plan" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4m8-4v4M4 10h16m-12 5 2 2 4-4"/></symbol>
+    <symbol id="i-team" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v2m2-15a3 3 0 0 1 0 6m4 9v-2a3 3 0 0 0-3-3"/></symbol>
+    <symbol id="i-document" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></symbol>
+    <symbol id="i-insert" viewBox="0 0 24 24"><path d="M6 12h12m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M12 5h7v7m0-7-9 9m-5-4v9h9"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 12H5m6-6-6 6 6 6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-compass"/></svg></span><span>Проектория</span></div>
+      <nav class="navigation" aria-label="Разделы">
+        <button class="nav-button nav-new" id="new-chat" type="button" aria-label="Новый диалог" title="Новый диалог" hidden><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Новый диалог</span></button>
+        <button class="nav-button" id="open-history" type="button" aria-label="История диалогов" title="История диалогов"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg><span>История</span></button>
+        <button class="nav-button nav-library" id="open-library" type="button"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>База знаний</span></button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <section class="welcome" id="welcome" aria-labelledby="welcome-title">
+      <div class="compass" aria-hidden="true">
+        <div class="compass-aura"></div>
+        <div class="compass-dots"></div>
+        <div class="orbit orbit-outer"><i></i></div>
+        <div class="orbit orbit-inner"><i></i></div>
+        <div class="orbit orbit-cross"><i></i></div>
+        <div class="compass-core"><span class="compass-star"></span><span class="compass-counterweight"></span></div>
+      </div>
+      <p class="welcome-context">Для студентов УрФУ</p>
+      <h1 id="welcome-title">С чего начнём проект?</h1>
+      <p class="welcome-lead">Планируйте проект, организуйте работу команды и готовьте документацию. Источники можно открыть в ответах.</p>
+    </section>
+
+    <section class="thread" id="thread" aria-labelledby="thread-title" hidden>
+      <h1 class="sr-only" id="thread-title">Диалог с Проекторией</h1>
+      <div class="turns" id="turns"></div>
+    </section>
+
+    <div class="dock" id="dock">
+      <form class="composer" id="composer" aria-label="Отправить вопрос">
+        <label class="sr-only" for="question">Вопрос о проекте</label>
+        <textarea id="question" name="question" rows="1" maxlength="3000" enterkeyhint="send" placeholder="Спросите о своём проекте…"></textarea>
+        <button class="send" id="send" type="submit" aria-label="Отправить вопрос" title="Отправить вопрос" disabled><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg></button>
+        <button class="send stop" id="stop" type="button" aria-label="Остановить ответ" title="Остановить ответ" hidden><svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg></button>
+      </form>
+      <p class="composer-help" id="composer-help"><kbd>Enter</kbd> отправляет, <kbd>Shift</kbd> + <kbd>Enter</kbd> переносит строку</p>
+    </div>
+
+    <section class="suggestions" id="suggestions" aria-labelledby="suggestions-title">
+      <h2 id="suggestions-title">Примеры вопросов</h2>
+      <div class="suggestion-grid">
+        <button class="suggestion" type="button" data-question="Как спланировать учебный IT-проект на семестр? Предложи этапы, результаты и контрольные точки.">
+          <span class="suggestion-icon tone-violet"><svg class="icon" aria-hidden="true"><use href="#i-plan"/></svg></span>
+          <span class="suggestion-copy"><strong>План проекта</strong><span>Как разбить семестр на этапы?</span></span>
+          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+        </button>
+        <button class="suggestion" type="button" data-question="Как организовать Scrum для команды из четырёх студентов? Предложи распределение ответственности и план первого спринта.">
+          <span class="suggestion-icon tone-teal"><svg class="icon" aria-hidden="true"><use href="#i-team"/></svg></span>
+          <span class="suggestion-copy"><strong>Scrum и роли</strong><span>Как работать командой из четырёх?</span></span>
+          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+        </button>
+        <button class="suggestion" type="button" data-question="Что включить в техническое задание на учебное приложение по ГОСТ 19.201-78? Предложи структуру и примеры требований.">
+          <span class="suggestion-icon tone-peach"><svg class="icon" aria-hidden="true"><use href="#i-document"/></svg></span>
+          <span class="suggestion-copy"><strong>Техническое задание</strong><span>Что включить в ТЗ по ГОСТ?</span></span>
+          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+        </button>
+        <button class="suggestion" type="button" data-question="Как настроить командную работу через Git и CI/CD? Покажи путь от задачи до проверки изменений перед слиянием.">
+          <span class="suggestion-icon tone-blue"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg></span>
+          <span class="suggestion-copy"><strong>Git и CI/CD</strong><span>Как проверять изменения в команде?</span></span>
+          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="panel" id="panel" aria-labelledby="panel-title">
+    <div class="panel-head">
+      <button class="icon-button" id="panel-back" type="button" aria-label="Вернуться к списку документов" hidden><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+      <h2 id="panel-title" tabindex="-1"></h2>
+      <button class="icon-button panel-close" id="panel-close" type="button" aria-label="Закрыть"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="panel-body" id="panel-body"></div>
+  </dialog>
+  <div class="sr-only" id="announcement" role="status" aria-live="polite"></div>
+</body>
+</html>

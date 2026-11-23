@@ -1,0 +1,146 @@
+[
+  {
+    "id": "project-planning",
+    "title": "NASA Systems Engineering Handbook: планирование проекта",
+    "publisher": "NASA",
+    "version": "Rev. 2, 2016",
+    "url": "https://www.nasa.gov/reference/6-1-technical-planning/",
+    "description": "Цели и границы работы, декомпозиция, расписание, технические риски и взаимодействие с заинтересованными сторонами.",
+    "file": "project-planning.md",
+    "section_urls": {
+      "risks": "https://www.nasa.gov/reference/6-4-technical-risk-management/",
+      "stakeholders": "https://www.nasa.gov/reference/4-1-stakeholder-expectations-definition/",
+      "progress": "https://www.nasa.gov/reference/6-7-technical-assessment/"
+    }
+  },
+  {
+    "id": "requirements",
+    "title": "NASA Systems Engineering Handbook: требования и испытания",
+    "publisher": "NASA",
+    "version": "Rev. 2, 2016",
+    "url": "https://www.nasa.gov/reference/4-2-technical-requirements-definition/",
+    "description": "Проверяемые требования, трассировка, верификация, валидация и подготовка критериев приёмки.",
+    "file": "requirements.md",
+    "section_urls": {
+      "traceability": "https://www.nasa.gov/reference/6-2-requirements-management/",
+      "verification-validation": "https://www.nasa.gov/reference/5-3-product-verification/",
+      "acceptance": "https://www.nasa.gov/reference/5-4-product-validation/"
+    }
+  },
+  {
+    "id": "agile",
+    "title": "Agile Manifesto",
+    "publisher": "Авторы Agile Manifesto",
+    "version": "2001, русский перевод",
+    "url": "https://agilemanifesto.org/iso/ru/manifesto.html",
+    "description": "Четыре ценности Agile и принципы разработки короткими циклами с обратной связью.",
+    "file": "agile.md",
+    "section_urls": {
+      "principles": "https://agilemanifesto.org/iso/ru/principles.html",
+      "feedback": "https://agilemanifesto.org/iso/ru/principles.html"
+    }
+  },
+  {
+    "id": "scrum",
+    "title": "Scrum Guide",
+    "publisher": "Ken Schwaber, Jeff Sutherland",
+    "version": "Ноябрь 2020",
+    "url": "https://scrumguides.org/scrum-guide.html",
+    "description": "Ответственности команды, события, артефакты и обязательства Scrum.",
+    "file": "scrum.md",
+    "section_urls": {
+      "team": "https://scrumguides.org/scrum-guide.html#scrum-team",
+      "product-backlog": "https://scrumguides.org/scrum-guide.html#product-backlog",
+      "sprint": "https://scrumguides.org/scrum-guide.html#the-sprint",
+      "sprint-planning": "https://scrumguides.org/scrum-guide.html#sprint-planning",
+      "daily-scrum": "https://scrumguides.org/scrum-guide.html#daily-scrum",
+      "review": "https://scrumguides.org/scrum-guide.html#sprint-review",
+      "retrospective": "https://scrumguides.org/scrum-guide.html#sprint-retrospective",
+      "done": "https://scrumguides.org/scrum-guide.html#commitment-definition-of-done"
+    }
+  },
+  {
+    "id": "kanban",
+    "title": "The Kanban Guide",
+    "publisher": "Kanban Guides",
+    "version": "Май 2025",
+    "url": "https://kanbanguides.org/the-kanban-guide/2025.5/",
+    "description": "Описание потока, ограничения незавершённой работы, прогноз SLE и метрики Kanban.",
+    "file": "kanban.md",
+    "section_urls": {
+      "workflow": "https://kanbanguides.org/the-kanban-guide/2025.5/#defining-and-visualizing-the-workflow",
+      "pull-wip": "https://kanbanguides.org/the-kanban-guide/2025.5/#actively-managing-items-in-a-workflow",
+      "metrics": "https://kanbanguides.org/the-kanban-guide/2025.5/#flow-metrics",
+      "sle": "https://kanbanguides.org/the-kanban-guide/2025.5/#defining-and-visualizing-the-workflow"
+    }
+  },
+  {
+    "id": "git",
+    "title": "Pro Git: ветки и совместная разработка",
+    "publisher": "Scott Chacon, Ben Straub / git-scm.com",
+    "version": "2-е издание",
+    "url": "https://git-scm.com/book/en/v2/Git-Branching-Basic-Branching-and-Merging",
+    "description": "Ветки, коммиты, слияния, разрешение конфликтов и рабочие процессы команды.",
+    "file": "git.md",
+    "section_urls": {
+      "branching": "https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell",
+      "workflows": "https://git-scm.com/book/en/v2/Git-Branching-Branching-Workflows",
+      "remotes": "https://git-scm.com/book/en/v2/Git-Basics-Working-with-Remotes"
+    }
+  },
+  {
+    "id": "github",
+    "title": "GitHub Docs: совместная работа",
+    "publisher": "GitHub",
+    "version": "Проверено 23.11.2026",
+    "url": "https://docs.github.com/en/pull-requests/concepts/writing-code-for-a-project",
+    "description": "Pull request, ревью, связь задач с доской Projects и автоматизация через GitHub Actions.",
+    "file": "github.md",
+    "section_urls": {
+      "reviews": "https://docs.github.com/en/pull-requests/reference/pull-request-reviews",
+      "projects": "https://docs.github.com/en/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects",
+      "actions": "https://docs.github.com/en/actions/get-started/understand-github-actions"
+    }
+  },
+  {
+    "id": "gitlab",
+    "title": "GitLab Docs: merge request и CI/CD",
+    "publisher": "GitLab",
+    "version": "Проверено 23.11.2026",
+    "url": "https://docs.gitlab.com/ci/pipelines/",
+    "description": "Задания, стадии, зависимости, артефакты и проверка изменений в GitLab.",
+    "file": "gitlab.md",
+    "section_urls": {
+      "needs": "https://docs.gitlab.com/ci/yaml/#needs",
+      "artifacts": "https://docs.gitlab.com/ci/jobs/job_artifacts/",
+      "merge-requests": "https://docs.gitlab.com/user/project/merge_requests/"
+    }
+  },
+  {
+    "id": "devops",
+    "title": "Microsoft Learn: основы DevOps",
+    "publisher": "Microsoft",
+    "version": "Проверено 23.11.2026",
+    "url": "https://learn.microsoft.com/en-us/devops/what-is-devops",
+    "description": "Жизненный цикл DevOps, непрерывная интеграция, доставка изменений и наблюдение за системой.",
+    "file": "devops.md"
+  },
+  {
+    "id": "gost-19-201",
+    "title": "ГОСТ 19.201-78: техническое задание на программу",
+    "publisher": "Госстандарт СССР / Федеральный фонд стандартов",
+    "version": "С Изменением № 1, ИУС 9-1981",
+    "url": "https://protect.gost.ru/gost/details/b64061cf-6bb2-4c75-aee9-18bb5e26e554",
+    "description": "Область применения ЕСПД, разделы технического задания на программу и требования к приёмке.",
+    "file": "gost-19-201.md"
+  },
+  {
+    "id": "gost-34-602",
+    "title": "ГОСТ 34.602-2020: техническое задание на АС",
+    "publisher": "Росстандарт / Федеральный фонд стандартов",
+    "version": "Действует с 01.01.2022; поправки ИУС 3-2022 и 7-2023",
+    "url": "https://protect.gost.ru/gost/details/5876f733-ee91-431a-8cb6-9e02ea2436ac",
+    "description": "Область применения, состав ТЗ на автоматизированную систему, требования и порядок приёмки.",
+    "file": "gost-34-602.md"
+  }
+]
