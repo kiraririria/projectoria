@@ -136,6 +136,8 @@ class Pipeline:
             answer, sources = UNRELATED, []
         else:
             note = {"partial": PARTIAL, "project_details": PROJECT_DETAILS}.get(status, "")
+            if status == "project_details":
+                passages = passages[:2]
             answer, sources = render(passages, self.knowledge, note=note)
         yield "final", self.result(answer, sources, mode, warnings, status=status)
 

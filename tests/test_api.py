@@ -274,13 +274,15 @@ async def test_underspecified_team_plan_can_return_source_and_request_context(br
     def provider(request):
         prompt = model_prompt(request)
         part = next(item for item in prompt["sources"] if "границ проекта" in item["text"])
-        return openrouter_response({"status": "answered", "passages": [part["id"]]})
+        other_ids = [item["id"] for item in prompt["sources"] if item != part][:2]
+        return openrouter_response({"status": "answered", "passages": [part["id"], *other_ids]})
 
     async with browser_api(provider) as client:
         kind, result = event_rows(await client.post("/api/chat", json={"message": question}))
     assert kind == "final" and result["status"] == "project_details"
     assert "Уточните, какой результат нужен" in result["answer"]
     assert result["sources"][0]["evidence"][0] in result["answer"]
+    assert sum(len(source["evidence"]) for source in result["sources"]) == 2
 
 
 async def test_missing_key_allows_library_without_calling_provider(browser_api):
