@@ -18,6 +18,8 @@ SYSTEM_PROMPT = """Ты помогаешь студентам найти отв�
 Прочитай вопрос с учётом его смысла, в том числе при неверной предпосылке. Поставь самый прямой фрагмент первым.
 Выбирай минимальный набор выдержек без повторов. Предпочитай общее правило, если пример описывает другой проект.
 Код покажет выбранные выдержки дословно. Тебе не нужно писать текст ответа, менять цифры или составлять план.
+Если пользователь лишь обозначил тему и ещё не задал вопрос, попроси уточнить через статус clarify.
+Короткая просьба объяснить термин или сделать что-то по теме считается запросом и без знака вопроса.
 
 Верни только JSON вида {"status":"answered","passages":["S1.2","S3.1"]}.
 Используй не более четырёх ID из переданных выдержек.
@@ -26,6 +28,7 @@ partial — выдержки отвечают на часть вопроса, д
 project_details — вопрос о конкретной команде, назначениях, сроках или плане, а в запросе не хватает
 вводных. Выбери только применимые общие правила, если они есть. Не назначай роли и не предлагай сроки.
 insufficient — по теме вопроса в базе нет подходящих сведений. Верни пустой список.
+clarify — пользователь обозначил тему, но вопрос или просьбу не сформулировал. Верни пустой список.
 unrelated — реплика не является вопросом по проектной работе. Верни пустой список.
 """
 
@@ -34,10 +37,21 @@ LOCAL_NOT_FOUND = ("В базе знаний нет официальных ма�
                    "Уточните его в действующем регламенте курса или у преподавателя.")
 UNRELATED = "Задайте вопрос о планировании проекта, работе команды, разработке или документации."
 CLARIFY = "Могу уточнить ответ. Напишите, что нужно разобрать, или повторите вопрос."
+ASK_QUESTION = "Понял тему. Что именно хотите узнать?"
 PROJECT_DETAILS = "Уточните, какой результат нужен, сколько у вас времени и чем занимаются участники команды."
 PARTIAL = "В базе нашлись сведения для части вопроса."
 UNAVAILABLE = "Сейчас модель не смогла подготовить ответ. Можно повторить вопрос или открыть базу знаний."
 MIXED_QUERY = re.compile(r"\?\s*\S|\bи (?:как|чем|подскажи|помоги|объясни)\b", re.I)
+TOPIC_DECLARATION = re.compile(
+    r"(?:(?:это|у меня|мой)\s+)?вопрос\s+(?:о|об|обо|про|по|на тему)\s+"
+    r"(?P<topic>[^.!?…:;,\n—–]+)[.!?…]*",
+    re.I,
+)
+REQUEST_CUE = re.compile(
+    r"\b(?:как|кто|что|где|когда|чем|зачем|почему|сколько|ли|как(?:ой|ая|ое|ую|ого|ому|ие|их|им|ими)|"
+    r"(?:подскажи|расскажи|объясни|покажи|опиши|перечисли|составь)(?:те)?)\b",
+    re.I,
+)
 PROJECT_SPECIFIC = re.compile(
     r"\b(?:у меня|у нас|наш\w+ проект)\b.*\bс чего (?:мне |нам )?нача\w*|"
     r"\b(?:назначь|распредели)\b.{0,45}\b(?:роли|ответственность)\b",
@@ -52,8 +66,14 @@ class Pipeline:
         self.knowledge = retriever.knowledge
 
     async def events(self, request: ChatRequest, router: OpenRouter, deadline: float):
-        yield "status", {"message": "Ищу материалы в базе знаний…"}
         message, history = request.message, request.history
+        declaration = TOPIC_DECLARATION.fullmatch(message)
+        if declaration and not REQUEST_CUE.search(declaration["topic"]):
+            yield "status", {"message": "Уточняю вопрос…"}
+            yield "final", self.result(ASK_QUESTION, [], "none", [], status="clarify")
+            return
+
+        yield "status", {"message": "Ищу материалы в базе знаний…"}
         if REACTION.fullmatch(message):
             yield "final", self.result(CLARIFY if history else UNRELATED, [], "none", [], status="clarify")
             return
@@ -128,12 +148,14 @@ class Pipeline:
             return
 
         status, passages = outcome
-        if status != "unrelated" and PROJECT_SPECIFIC.search(message):
+        if status in {"answered", "partial", "insufficient"} and PROJECT_SPECIFIC.search(message):
             status = "project_details"
         if status == "insufficient":
             answer, sources = NOT_FOUND, []
         elif status == "unrelated":
             answer, sources = UNRELATED, []
+        elif status == "clarify":
+            answer, sources = ASK_QUESTION, []
         else:
             note = {"partial": PARTIAL, "project_details": PROJECT_DETAILS}.get(status, "")
             if status == "project_details":

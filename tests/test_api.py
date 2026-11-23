@@ -255,6 +255,47 @@ async def test_reaction_to_an_unsuccessful_answer_does_not_search_old_question(b
     assert "уточнить" in result["answer"]
 
 
+@pytest.mark.parametrize("message", ["это вопрос о планировании", "У меня вопрос про сроки проекта."])
+async def test_topic_declaration_asks_for_a_question_without_openrouter(browser_api, message):
+    history = [
+        {"role": "user", "content": "Вопрос не про проект."},
+        {"role": "assistant", "content": "Задайте вопрос о проектной работе."},
+    ]
+    async with browser_api(never_call_openrouter, embedding_model=Settings().embedding_model) as client:
+        kind, result = event_rows(await client.post("/api/chat", json={"message": message, "history": history}))
+    assert kind == "final" and result["status"] == "clarify"
+    assert "Что именно хотите узнать?" in result["answer"]
+    assert result["retrieval"]["mode"] == "none" and not result["sources"]
+
+
+@pytest.mark.parametrize("message", [
+    "Это вопрос о планировании: как определить границы проекта?",
+    "У меня вопрос про то как определить границы проекта",
+    "Это вопрос о планировании нужно ли определить границы проекта",
+])
+async def test_topic_intro_preserves_a_concrete_question(browser_api, message):
+    def provider(request):
+        prompt = model_prompt(request)
+        part = next(item for item in prompt["sources"] if "Для определения границ проекта" in item["text"])
+        return openrouter_response({"status": "answered", "passages": [part["id"]]})
+
+    async with browser_api(provider) as client:
+        kind, result = event_rows(await client.post("/api/chat", json={"message": message}))
+    assert kind == "final" and result["status"] == "answered"
+    assert result["sources"][0]["id"] == "project-planning--scope"
+
+
+async def test_model_can_ask_for_clarification_without_suggesting_passages(browser_api):
+    def provider(request):
+        model_prompt(request)
+        return openrouter_response({"status": "clarify", "passages": []})
+
+    async with browser_api(provider) as client:
+        kind, result = event_rows(await client.post("/api/chat", json={"message": "Вообще я имел в виду планирование."}))
+    assert kind == "final" and result["status"] == "clarify"
+    assert "Что именно хотите узнать?" in result["answer"] and not result["sources"]
+
+
 async def test_short_new_question_does_not_inherit_old_topic(browser_api):
     def provider(request):
         prompt = model_prompt(request)

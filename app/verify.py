@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.knowledge import Chunk, Knowledge
 
 PassageId = Annotated[str, StringConstraints(pattern=r"^S[1-9][0-9]*\.[1-9][0-9]*$")]
-Status = Literal["answered", "partial", "project_details", "insufficient", "unrelated"]
+Status = Literal["answered", "partial", "project_details", "insufficient", "unrelated", "clarify"]
 INSTRUCTION_LINE = re.compile(
     r"^\s*(?:[-*>]\s*)?(?:system|assistant|developer|система|ассистент|разработчик)\s*[:：]|"
     r"\b(?:игнорируй\w*|забудь\w*|ignore|forget|disregard|override)\b.{0,90}"
@@ -48,7 +48,7 @@ def source_passages(chunks: list[Chunk]) -> dict[str, Passage]:
 def verify(draft: Draft, passages: dict[str, Passage]) -> list[Passage] | None:
     if draft.status in {"answered", "partial"} and not draft.passages:
         return None
-    if draft.status in {"insufficient", "unrelated"} and draft.passages:
+    if draft.status in {"insufficient", "unrelated", "clarify"} and draft.passages:
         return None
     if len(set(draft.passages)) != len(draft.passages) or not all(key in passages for key in draft.passages):
         return None

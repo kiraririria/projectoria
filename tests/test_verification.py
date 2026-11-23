@@ -23,6 +23,7 @@ def test_verifier_resolves_only_passages_provided_to_model():
     ("answered", ["S1.1", "S1.1"]),
     ("insufficient", ["S1.1"]),
     ("unrelated", ["S1.1"]),
+    ("clarify", ["S1.1"]),
 ])
 def test_verifier_rejects_invalid_selection(status, ids):
     assert verify(Draft(status=status, passages=ids), source_passages([CHUNK])) is None
