@@ -50,6 +50,9 @@ LOCAL_POLICY = re.compile(
     r"(?:обязательн\w*|правил\w*|требовани\w*|требу\w*|утвержд\w*)\s+(?:(?:в|для)\s+)?" + CAMPUS + "|" +
     CAMPUS + r"\s+(?:обязательн|требуе?т|установил|утвердил|предписыва)", re.I,
 )
+SCRUM_MASTER = re.compile(r"\b(?:scrum[\s\-‑–]+master|скрам[\s\-‑–]+мастер\w*)\b", re.I)
+OBLIGATION = re.compile(r"\b(?:обязател(?:ен|ьн\w*)|нуж(?:ен|на|но|ны)|надо|требу\w*)\b", re.I)
+SCRUM_GUIDE = re.compile(r"\b(?:scrum\s+guide|руководств\w*\s+по\s+(?:scrum|скраму?))\b", re.I)
 
 
 def tokens(text: str) -> list[str]:
@@ -75,7 +78,11 @@ def retrieval_query(message: str, history: list[Message] | tuple[Message, ...] =
 
 
 def institutional_request(message: str, history: list[Message] | tuple[Message, ...]) -> bool:
-    return bool(INSTITUTION.search(retrieval_query(message, history)) and LOCAL_POLICY.search(message))
+    if not INSTITUTION.search(retrieval_query(message, history)):
+        return False
+    if LOCAL_POLICY.search(message):
+        return True
+    return bool(SCRUM_MASTER.search(message) and OBLIGATION.search(message) and not SCRUM_GUIDE.search(message))
 
 
 class Retriever:

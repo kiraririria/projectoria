@@ -309,6 +309,9 @@ async def test_missing_key_allows_library_without_calling_provider(browser_api):
     "Укажи точную дату и время защиты проектной практики ИРИТ-РТФ для группы РИ-240001 в этом семестре.",
     "Какой локальный приказ УрФУ устанавливает минимум 27 страниц для любого студенческого ТЗ?",
     "До какого числа нужно загрузить отчёт в ЛК УрФУ?",
+    "Обязательно ли назначать Scrum Master в учебном проекте УрФУ?",
+    "Нужен ли скрам-мастер для учебного проекта в УрФУ?",
+    "В учебных проектах УрФУ (что явно указано в ТЗ) нужен Scrum Master вообще?",
 ])
 async def test_unknown_campus_rules_do_not_trigger_generation(browser_api, question):
     async with browser_api(never_call_openrouter) as client:
@@ -319,9 +322,11 @@ async def test_unknown_campus_rules_do_not_trigger_generation(browser_api, quest
         assert result["sources"] == []
 
 
-async def test_campus_mention_does_not_block_method_answer(browser_api):
-    question = "Какие требования к Scrum Team описывает Scrum Guide для нашего проекта в УрФУ?"
-
+@pytest.mark.parametrize("question", [
+    "Какие требования к Scrum Team описывает Scrum Guide для нашего проекта в УрФУ?",
+    "Обязателен ли Scrum Master по Scrum Guide, если команда работает над проектом в УрФУ?",
+])
+async def test_campus_mention_does_not_block_method_answer(browser_api, question):
     def provider(request):
         return openrouter_response(cited_payload(model_prompt(request)))
 
