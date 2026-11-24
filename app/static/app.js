@@ -232,6 +232,13 @@ const reaction = /^(?:[\s.!?…]+|(?:что|ч[её]|шо)\s+(?:это\s+)?за\
 const scrumConfirmation = /^да(?:\s*,?\s*(?:scrum|скрам))?[.!?…]*$/iu;
 const scrumSpelling = "Вы имели в виду Scrum?";
 
+const replyReference = /^\s*(?:а\s+)?(?:почему ты (?:сказал[аи]?|написал[аи]?|ответил[аи]?)|что ты (?:имел[аи]? в виду|подразумевал[аи]?)|в (?:тво[её]м|прошлом|предыдущем) (?:ответе|сообщении))(?![\p{L}\p{N}_])/iu;
+const continuesTopic = (question) => followUp.test(question) || replyReference.test(question);
+
+function historyExcerpt(text) {
+  return Array.from(text).slice(0, 700).join("").trimEnd();
+}
+
 function dialogHistory(question, turns) {
   const latest = turns.at(-1);
   if (!latest) return [];
@@ -243,17 +250,33 @@ function dialogHistory(question, turns) {
     ];
   }
 
-  const isReaction = reaction.test(question);
-  if (!isReaction && !followUp.test(question)) return [];
+  if (reaction.test(question)) return [{ role: "user", content: historyExcerpt(latest.question) }];
+  if (!continuesTopic(question)) return [];
 
-  // The server only needs to know that a dialog exists when handling a reaction.
-  const previous = isReaction ? latest : turns.slice(-4).findLast((turn) => !reaction.test(turn.question));
-  if (!previous) return [];
+  const recent = [];
+  let anchor;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (reaction.test(turn.question)) continue;
+    if (!continuesTopic(turn.question)) {
+      anchor = turn;
+      break;
+    }
+    if (recent.length < 2) recent.unshift(turn);
+  }
 
-  const excerpt = Array.from(previous.question).slice(0, 700).join("").trimEnd();
-  // Keep a question that could otherwise look like a reaction after truncation.
-  const content = !isReaction && reaction.test(excerpt) ? previous.question : excerpt;
-  return [{ role: "user", content }];
+  const relevant = anchor ? [anchor, ...recent] : recent;
+  const history = relevant.map(({ question }) => {
+    const excerpt = historyExcerpt(question);
+    // A leading reaction or follow-up prefix can change classification when cut mid-word.
+    const content = reaction.test(excerpt) || continuesTopic(question) !== continuesTopic(excerpt) ? question : excerpt;
+    return { role: "user", content };
+  });
+  const previousReply = relevant.at(-1)?.result.answer;
+  if (replyReference.test(question) && previousReply?.trim()) {
+    history.push({ role: "assistant", content: historyExcerpt(previousReply.trim()) });
+  }
+  return history;
 }
 
 async function streamReply(message, history, signal, onStatus) {

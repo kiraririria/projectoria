@@ -6,6 +6,8 @@ import pytest
 
 from app.config import Settings
 from app.knowledge import load_knowledge
+from app.retrieval import retrieval_query
+from app.schemas import Message
 from app.server import create_app
 from evaluation.run import CITATION, events
 
@@ -99,7 +101,7 @@ async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api, in
     async with browser_api(provider) as client:
         kind, answer = event_rows(await client.post("/api/chat", json={"message": question, "history": history}))
         assert captured[0]["question"] == question
-        assert captured[0]["previous_question"] == TEAM_QUESTION
+        assert captured[0]["dialog_context"] == [{"role": "user", "content": TEAM_QUESTION}]
         assert kind == "final", answer
         assert answer["grounded"] is True
         assert answer["retrieval"]["mode"] == "lexical"
@@ -115,6 +117,48 @@ async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api, in
         assert source["excerpt"] in detail.json()["excerpt"]
         assert source["url"] == detail.json()["url"]
         assert TEST_KEY not in str(answer)
+
+
+@pytest.mark.parametrize(("question", "include_reply"), [
+    ("Тогда кто отвечает за бэклог?", False),
+    ("Почему ты сказал, что за бэклог отвечает Product Owner?", True),
+])
+async def test_long_follow_up_keeps_topic_and_recent_details(browser_api, question, include_reply):
+    anchor = {"role": "user", "content": TEAM_QUESTION}
+    earlier = {"role": "user", "content": "А если все работают удалённо?"}
+    team_size = {"role": "user", "content": "А если у нас 3 человека?"}
+    last_question = {"role": "user", "content": "А если один из нас ещё и пишет код?"}
+    last_reply = {"role": "assistant", "content": "Мы обсуждали ответственность Product Owner."}
+    history = [
+        {"role": "user", "content": "Что такое Kanban?"},
+        anchor, earlier, team_size, last_question, last_reply,
+        {"role": "user", "content": "Не понял"},
+        {"role": "assistant", "content": "Что нужно разобрать?"},
+    ]
+    expected_context = [anchor, team_size, last_question]
+    prompt_contexts = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        prompt_contexts.append(prompt["dialog_context"])
+        part = next(item for item in prompt["sources"] if FACT in item["text"])
+        return openrouter_response({"status": "answered", "blocks": [
+            cited_block(part, FACT, "В вашей команде из 3 человек роль Product Owner закреплена за одним человеком."),
+        ]})
+
+    query = retrieval_query(question, [Message(**item) for item in history])
+    assert query.splitlines() == [question, *(item["content"] for item in expected_context)]
+    async with browser_api(provider) as client:
+        for request_history in (history, [*expected_context, *([last_reply] if include_reply else [])]):
+            kind, result = event_rows(await client.post(
+                "/api/chat", json={"message": question, "history": request_history},
+            ))
+            assert kind == "final" and result["grounded"]
+            assert result["sources"][0]["document_id"] == "scrum"
+
+    if include_reply:
+        expected_context.append(last_reply)
+    assert prompt_contexts == [expected_context, expected_context]
 
 
 async def test_agile_is_explained_directly_with_short_source_quotes(browser_api):
@@ -392,7 +436,7 @@ async def test_model_can_ask_for_clarification_without_suggesting_passages(brows
 async def test_short_new_question_does_not_inherit_old_topic(browser_api):
     def provider(request):
         prompt = model_prompt(request)
-        assert prompt["previous_question"] == ""
+        assert prompt["dialog_context"] == []
         part = next(item for item in prompt["sources"] if "WIP — работа" in item["text"])
         return openrouter_response({"status": "answered", "blocks": [
             cited_block(part, "WIP — работа, которую уже начали и ещё не закончили."),
