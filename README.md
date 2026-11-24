@@ -63,7 +63,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 | --- | --- |
 | `OPENROUTER_CHAT_MODEL` | `deepseek/deepseek-v4.1-flash` |
 | `OPENROUTER_EMBEDDING_MODEL` | `baai/bge-m3` |
-| `OPENROUTER_RERANK_MODEL` | Пусто. Можно включить дополнительное ранжирование |
+| `OPENROUTER_RERANK_MODEL` | `qwen/qwen3-reranker-0.6b` |
 
 ## Проверка качества
 
