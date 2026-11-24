@@ -120,6 +120,7 @@ async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api):
 async def test_agile_is_explained_directly_with_short_source_quotes(browser_api):
     definition = "Agile — подход к разработке с регулярной поставкой работающего продукта и готовностью менять планы."
     quote = "Принципы Agile связывают ценность с ранней и регулярной поставкой работающего программного продукта."
+    tangential = "Процессы и инструменты, документация, договорённости и планы тоже полезны."
 
     def provider(request):
         prompt = model_prompt(request)
@@ -128,13 +129,14 @@ async def test_agile_is_explained_directly_with_short_source_quotes(browser_api)
         values = next(item for item in prompt["sources"] if "способность менять планы" in item["text"])
         block = cited_block(part, quote, definition)
         block["evidence"].append({"id": values["id"], "quote": "способность менять планы вслед за новыми обстоятельствами"})
-        return openrouter_response({"status": "answered", "blocks": [block]})
+        return openrouter_response({"status": "answered", "blocks": [block, cited_block(values, tangential)]})
 
     async with browser_api(provider) as client:
         kind, answer = event_rows(await client.post("/api/chat", json={"message": "Что такое Agile?"}))
     assert kind == "final" and answer["grounded"]
     assert answer["answer"].startswith(definition)
     assert quote not in answer["answer"]
+    assert tangential not in answer["answer"]
     assert [source["id"] for source in answer["sources"]] == ["agile--principles", "agile--values"]
     assert answer["sources"][0]["evidence"] == [quote]
 

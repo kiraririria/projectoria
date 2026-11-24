@@ -27,7 +27,7 @@ def requested_term(message: str) -> str:
     if not match:
         return ""
     term = match["term"].strip('«»"').rstrip(".")
-    if re.search(r"\b(?:и|или)\s+(?:как|чем|кто|где|почему|что|когда|зачем|можно|нужно)\b", term, re.I):
+    if re.search(r"\b(?:и|или)\b", term, re.I):
         return ""
     return METHODOLOGY_CONTEXT.sub("", term)
 
