@@ -309,6 +309,50 @@ async def test_short_new_question_does_not_inherit_old_topic(browser_api):
     assert kind == "final" and result["sources"][0]["document_id"] == "kanban"
 
 
+async def test_definition_typo_requires_confirmation_before_looking_up_the_term(browser_api):
+    question = "что такое Srum?"
+    async with browser_api(never_call_openrouter) as client:
+        kind, clarification = event_rows(await client.post("/api/chat", json={"message": question}))
+        assert kind == "final" and clarification["status"] == "clarify"
+        assert "Scrum" in clarification["answer"] and "?" in clarification["answer"]
+        assert clarification["sources"] == [] and not clarification["grounded"]
+
+        history = [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": clarification["answer"]},
+        ]
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": "Да.", "history": history}))
+    assert kind == "final" and answer["status"] == "insufficient"
+    assert "Scrum" in answer["answer"] and "определени" in answer["answer"].casefold()
+    assert answer["sources"] == [] and not answer["grounded"]
+
+
+@pytest.mark.parametrize(("question", "term"), [
+    ("Что такое Scrum?", "Scrum"),
+    ("Что такое скрам?", "Scrum"),
+    ("Что такое НДС?", "НДС"),
+])
+async def test_missing_definition_does_not_return_related_passages(browser_api, question, term):
+    async with browser_api(never_call_openrouter) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+    assert kind == "final" and answer["status"] == "insufficient"
+    assert term.casefold() in answer["answer"].casefold() and "определени" in answer["answer"].casefold()
+    assert answer["sources"] == [] and not answer["grounded"]
+
+
+@pytest.mark.parametrize(("question", "definition", "source_id"), [
+    ("Что такое Scrum Team?", "Scrum Team — небольшая самоуправляемая кросс-функциональная команда", "scrum--team"),
+    ("Что такое SLE?", "SLE (Service Level Expectation) — вероятностный прогноз", "kanban--sle"),
+])
+async def test_direct_definition_returns_the_passage_with_evidence(browser_api, question, definition, source_id):
+    async with browser_api(never_call_openrouter) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
+    assert definition in answer["answer"]
+    assert [source["id"] for source in answer["sources"]] == [source_id]
+    assert definition in answer["sources"][0]["evidence"][0]
+
+
 async def test_underspecified_team_plan_can_return_source_and_request_context(browser_api):
     question = "У меня новый проект про создание телеграм бота для сборки отзывов. С чего мне начать, команда три человека"
 

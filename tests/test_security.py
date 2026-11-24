@@ -11,6 +11,7 @@ from app.schemas import MAX_BODY_BYTES
 from app.security import RESPONSE_HEADERS
 from evaluation.run import events
 
+PROVIDER_QUESTION = "За что отвечает Scrum Master?"
 pytestmark = pytest.mark.anyio
 
 
@@ -111,7 +112,7 @@ async def test_chat_deadline_returns_terminal_sse_error(monkeypatch):
 
     async with api(slow_provider) as client:
         await client.get("/api/health")  # Warm the corpus before testing the streaming deadline.
-        response = await client.post("/api/chat", json={"message": "Что такое Scrum?"})
+        response = await client.post("/api/chat", json={"message": PROVIDER_QUESTION})
     rows = list(events(iter(response.text.splitlines())))
     assert rows[0][0] == "status" and rows[-1][0] == "error"
     assert "вовремя" in rows[-1][1]["message"]
@@ -125,7 +126,7 @@ async def test_provider_oversized_response_is_bounded_and_sanitized(monkeypatch)
         return httpx.Response(200, json={"private_mock_value": "x" * 64})
 
     async with api(provider) as client:
-        response = await client.post("/api/chat", json={"message": "Что такое Scrum?"})
+        response = await client.post("/api/chat", json={"message": PROVIDER_QUESTION})
     rows = list(events(iter(response.text.splitlines())))
     assert rows[-1][0] == "error"
     assert "private_mock_value" not in response.text
@@ -139,6 +140,6 @@ async def test_provider_redirect_is_not_followed():
         return httpx.Response(307, headers={"Location": "https://unrelated.test/"})
 
     async with api(provider) as client:
-        response = await client.post("/api/chat", json={"message": "Что такое Scrum?"})
+        response = await client.post("/api/chat", json={"message": PROVIDER_QUESTION})
     assert list(events(iter(response.text.splitlines())))[-1][0] == "error"
     assert targets == ["openrouter.ai"]
