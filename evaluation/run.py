@@ -116,9 +116,16 @@ def check_answer(client, case, payload):
         issues.append("Статус наличия подтверждений отличается от ожидаемого")
     if expected_status and payload.get("status") != expected_status:
         issues.append(f"Ожидался статус {expected_status}, получен {payload.get('status')}")
-    for marker in case.get("required", []):
-        if normalized(marker) not in answer_text:
-            issues.append(f"Нет ожидаемого фрагмента ответа: {marker}")
+    for group in case.get("required", []):
+        markers = [group] if isinstance(group, str) else group
+        if not any(normalized(marker) in answer_text for marker in markers):
+            issues.append(f"Нет ожидаемого фрагмента ответа: {', '.join(markers)}")
+    if opening := case.get("opening_pattern"):
+        if not re.match(opening, answer_text.replace("**", "")):
+            issues.append("Ответ не начинается с прямого определения понятия")
+    if (max_words := case.get("max_words")) is not None:
+        if len(CITATION.sub("", answer).split()) > max_words:
+            issues.append(f"Ответ длиннее {max_words} слов")
     for marker in case.get("forbidden", []):
         if normalized(marker) in answer_text:
             issues.append(f"В ответ попала контрольная строка {marker}")
@@ -128,10 +135,10 @@ def check_answer(client, case, payload):
         if not all(record.get(key) == source[key] for key in SOURCE_FIELDS):
             issues.append(f"Карточка {source['id']} не совпадает с записью в базе")
         elif not source.get("evidence") or any(
-            normalized(snippet) not in normalized(record["excerpt"]) or normalized(snippet) not in answer_text
+            not normalized(snippet) or normalized(snippet) not in normalized(record["excerpt"])
             for snippet in source["evidence"]
         ):
-            issues.append(f"Выдержка из {source['id']} отсутствует в ответе или в базе")
+            issues.append(f"Выдержка из {source['id']} отсутствует в базе")
     missing = missing_groups(case, source_ids)
     if missing:
         issues.append(f"Отсутствуют нужные фрагменты: {missing}")

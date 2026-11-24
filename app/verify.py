@@ -6,9 +6,33 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.knowledge import Chunk, Knowledge
+from app.retrieval import INSTITUTION, tokens
 
 PassageId = Annotated[str, StringConstraints(pattern=r"^S[1-9][0-9]*\.[1-9][0-9]*$")]
 Status = Literal["answered", "partial", "project_details", "insufficient", "unrelated", "clarify"]
+MACHINE_REFERENCE = re.compile(r"\[S\d+(?:\.\d+)?\]|https?://|\]\(", re.I)
+LIST_NUMBER = re.compile(r"^\s*\d+[.)]\s+")
+QUANTITY_UNITS = {
+    text: family for family, variants in (
+        ("секунд", "секунд секунда секунды секунду секундами секундное секундный"),
+        ("минут", "минут минута минуты минуту минутами минутное минутный мин"),
+        ("час", "час часа часов часами часовое часовой"),
+        ("день", "день дня дней днем днями дневное дневный"),
+        ("неделя", "неделя недели недель неделю неделями недельное недельный"),
+        ("месяц", "месяц месяца месяцев месяцами месячное месячный"),
+        ("год", "год года лет годами годовое годовой"),
+        ("человек", "человек человека людьми участник участника участников"),
+        ("%", "% процент процента процентов процентами"),
+    ) for text in variants.split()
+}
+UNIT_PATTERN = "|".join(map(re.escape, QUANTITY_UNITS))
+MONTH_PATTERN = ("января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря")
+NUMBER = re.compile(
+    rf"(?P<amount>\d+(?:[.,:/–—-]\d+)*)(?:\s*(?P<date>(?:{MONTH_PATTERN})\b(?:\s+\d{{4}}\b)?)"
+    rf"|[ \t–—-]*(?P<unit>[‰%]|(?:{UNIT_PATTERN})(?!\w)))?"
+)
+REQUIREMENT = re.compile(r"\b(?:треб\w*|обяз\w*|долж\w*|регламент\w*|приказ\w*)\b", re.I)
+SUBJECT_ALIASES = {"agile": "аджайл", "scrum": "скрам", "kanban": "канбан"}
 INSTRUCTION_LINE = re.compile(
     r"^\s*(?:[-*>]\s*)?(?:system|assistant|developer|система|ассистент|разработчик)\s*[:：]|"
     r"\b(?:игнорируй\w*|забудь\w*|ignore|forget|disregard|override)\b.{0,90}"
@@ -18,17 +42,38 @@ INSTRUCTION_LINE = re.compile(
 )
 
 
+class Evidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: PassageId
+    quote: str = Field(min_length=1, max_length=560)
+
+
+class AnswerBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=800)]
+    evidence: list[Evidence] = Field(min_length=1, max_length=4)
+
+
 class Draft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Status
-    passages: list[PassageId] = Field(max_length=4)
+    blocks: list[AnswerBlock] = Field(max_length=4)
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=420)] = ""
 
 
 @dataclass(frozen=True)
 class Passage:
     chunk: Chunk
     text: str
+
+
+@dataclass(frozen=True)
+class VerifiedBlock:
+    text: str
+    evidence: tuple[Passage, ...]
 
 
 def normalized(text: str) -> str:
@@ -45,26 +90,124 @@ def source_passages(chunks: list[Chunk]) -> dict[str, Passage]:
     return passages
 
 
-def verify(draft: Draft, passages: dict[str, Passage]) -> list[Passage] | None:
-    if draft.status in {"answered", "partial"} and not draft.passages:
+def find_quote(text: str, quote: str) -> str | None:
+    words = unicodedata.normalize("NFC", quote).split()
+    if len(words) < 2 or len(" ".join(words)) < 12:
         return None
-    if draft.status in {"insufficient", "unrelated", "clarify"} and draft.passages:
-        return None
-    if len(set(draft.passages)) != len(draft.passages) or not all(key in passages for key in draft.passages):
-        return None
-    return [passages[key] for key in draft.passages]
+    pattern = r"\s+".join(re.sub("[её]", "[её]", re.escape(word), flags=re.I) for word in words)
+    if words[0][0].isalnum():
+        pattern = r"(?<!\w)" + pattern
+    if words[-1][-1].isalnum():
+        pattern += r"(?!\w)"
+    match = re.search(pattern, text, flags=re.I)
+    return match.group() if match else None
 
 
-def render(passages: list[Passage], knowledge: Knowledge, *, lead: str = "", note: str = "") -> tuple[str, list[dict]]:
-    blocks = [lead] if lead else []
+def values(text: str, *, include_bare: bool = False) -> set[tuple[str, str]]:
+    result = set()
+    for match in NUMBER.finditer(normalized(text)):
+        amount = match["amount"].translate(str.maketrans("–—,", "--."))
+        unit = match["date"] or QUANTITY_UNITS.get(match["unit"], match["unit"]) or ""
+        result.add((amount, unit))
+        if include_bare:
+            result.add((amount, ""))
+    return result
+
+
+def subject_forms(term: str) -> list[str]:
+    name = normalized(term)
+    alias = SUBJECT_ALIASES.get(name) or next(
+        (key for key, value in SUBJECT_ALIASES.items() if value == name), "",
+    )
+    return [name, alias] if alias else [name]
+
+
+def opens_with_definition(text: str, term: str) -> bool:
+    lead = LIST_NUMBER.sub("", normalized(text)).lstrip("-* ")
+    lead = lead.replace("**", "").replace("__", "").replace("`", "")
+    names = "|".join(map(re.escape, subject_forms(term)))
+    name = rf"[«\"]?(?:{names})[»\"]?"
+    intro = (r"(?:(?:[—–:-]\s*)|(?:это|означает|называют|подразумевает|представляет собой|"
+             r"расшифровывается как)\s+)")
+    return bool(re.match(
+        rf"(?:{name}(?:\s*\([^)]*\))?\s*{intro}|под\s+{name}\s+(?:понимают|имеют в виду)\s+)\S", lead,
+    ))
+
+
+def evidence_has_subject(evidence: tuple[Passage, ...], term: str) -> bool:
+    if not evidence:
+        return False
+    for part in evidence:
+        # Definitions can be synthesized from a passage dedicated to that subject.
+        # Check its heading as well as the verified quotation, so supporting details can be brief.
+        source = normalized(f"{part.chunk.section}\n{part.text}")
+        stemmed = " ".join(tokens(source))
+        for form in subject_forms(term):
+            if re.search(rf"(?<!\w){re.escape(form)}(?!\w)", source):
+                return True
+            stem = " ".join(tokens(form))
+            if stem and re.search(rf"(?<!\w){re.escape(stem)}(?!\w)", stemmed):
+                return True
+    return False
+
+
+def verify(
+    draft: Draft, passages: dict[str, Passage], *, question: str = "", definition_term: str = "",
+) -> list[VerifiedBlock] | None:
+    if draft.status in {"answered", "partial"} and not draft.blocks:
+        return None
+    if draft.status in {"insufficient", "unrelated", "clarify"} and draft.blocks:
+        return None
+    if re.search(r"[\r\n\d]", draft.note) or MACHINE_REFERENCE.search(draft.note):
+        return None
+    if (definition_term and draft.blocks and draft.status in {"answered", "partial"}
+            and not opens_with_definition(draft.blocks[0].text, definition_term)):
+        return None
+
+    user_values = values(question, include_bare=True)
+    verified = []
+    for block in draft.blocks:
+        if re.search(r"[\r\n]", block.text) or MACHINE_REFERENCE.search(block.text):
+            return None
+        evidence = []
+        for ref in block.evidence:
+            part = passages.get(ref.id)
+            quote = find_quote(part.text, ref.quote) if part else None
+            if quote is None:
+                return None
+            verified_quote = Passage(part.chunk, quote)
+            if verified_quote not in evidence:
+                evidence.append(verified_quote)
+        quotes = " ".join(part.text for part in evidence)
+        if values(LIST_NUMBER.sub("", block.text)) - (values(quotes, include_bare=True) | user_values):
+            return None
+        if INSTITUTION.search(block.text) and REQUIREMENT.search(block.text) and not INSTITUTION.search(quotes):
+            return None
+        verified.append(VerifiedBlock(block.text, tuple(evidence)))
+    if (definition_term and verified and draft.status in {"answered", "partial"}
+            and not evidence_has_subject(verified[0].evidence, definition_term)):
+        return None
+    return verified
+
+
+def render_answer(
+    blocks: list[VerifiedBlock], knowledge: Knowledge, *, lead: str = "", note: str = "",
+) -> tuple[str, list[dict]]:
+    paragraphs = [lead] if lead else []
     sources = {}
-    for passage in passages:
-        chunk = passage.chunk
-        if chunk.id not in sources:
-            sources[chunk.id] = dict(knowledge.source(chunk, f"S{len(sources) + 1}"), evidence=[])
-        source = sources[chunk.id]
-        source["evidence"].append(passage.text)
-        blocks.append(f"{passage.text} [{source['label']}]")
+    for block in blocks:
+        labels = []
+        for passage in block.evidence:
+            chunk = passage.chunk
+            if chunk.id not in sources:
+                sources[chunk.id] = dict(knowledge.source(chunk, f"S{len(sources) + 1}"), evidence=[])
+            source = sources[chunk.id]
+            if passage.text not in source["evidence"]:
+                source["evidence"].append(passage.text)
+            label = f"[{source['label']}]"
+            if label not in labels:
+                labels.append(label)
+        paragraphs.append(f"{block.text} {' '.join(labels)}")
     if note:
-        blocks.append(note)
-    return "\n\n".join(blocks), list(sources.values())
+        paragraphs.append(note)
+    return "\n\n".join(paragraphs), list(sources.values())

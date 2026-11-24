@@ -12,6 +12,7 @@ from evaluation.run import CITATION, events
 
 TEAM_QUESTION = "Назови ответственности Scrum Team: Product Owner, Scrum Master и Developers."
 FACT = "Product Owner — один человек."
+PARAPHRASE = "За работу Product Owner отвечает один человек."
 TEST_KEY = "secret-only-for-mock-tests"
 pytestmark = pytest.mark.anyio
 
@@ -53,9 +54,16 @@ def model_prompt(request):
     return json.loads(payload["messages"][1]["content"])
 
 
+def cited_block(source, quote, text=None):
+    return {"text": text or quote, "evidence": [{"id": source["id"], "quote": quote}]}
+
+
 def cited_payload(prompt, *, status="answered", source_id=None):
     source = next(item for item in prompt["sources"] if FACT in item["text"])
-    return {"status": status, "passages": [source_id or source["id"]]}
+    block = cited_block(source, FACT, PARAPHRASE)
+    if source_id is not None:
+        block["evidence"][0]["id"] = source_id
+    return {"status": status, "blocks": [block]}
 
 
 @pytest.fixture
@@ -95,17 +103,97 @@ async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api):
         assert kind == "final", answer
         assert answer["grounded"] is True
         assert answer["retrieval"]["mode"] == "lexical"
-        assert FACT in answer["answer"]
+        assert PARAPHRASE in answer["answer"]
+        assert FACT not in answer["answer"]
         assert len(answer["sources"]) == 1
         source = answer["sources"][0]
         assert source["document_id"] == "scrum"
-        assert source["evidence"][0] in answer["answer"]
+        assert source["evidence"] == [FACT]
         assert set(CITATION.findall(answer["answer"])) == {source["label"]}
         detail = await client.get(f"/api/sources/{source['id']}")
         assert detail.status_code == 200
         assert source["excerpt"] in detail.json()["excerpt"]
         assert source["url"] == detail.json()["url"]
         assert TEST_KEY not in str(answer)
+
+
+async def test_agile_is_explained_directly_with_short_source_quotes(browser_api):
+    definition = "Agile — подход к разработке с регулярной поставкой работающего продукта и готовностью менять планы."
+    quote = "Принципы Agile связывают ценность с ранней и регулярной поставкой работающего программного продукта."
+
+    def provider(request):
+        prompt = model_prompt(request)
+        assert prompt["question"] == "Что такое Agile?"
+        part = next(item for item in prompt["sources"] if quote in item["text"])
+        values = next(item for item in prompt["sources"] if "способность менять планы" in item["text"])
+        block = cited_block(part, quote, definition)
+        block["evidence"].append({"id": values["id"], "quote": "способность менять планы вслед за новыми обстоятельствами"})
+        return openrouter_response({"status": "answered", "blocks": [block]})
+
+    async with browser_api(provider) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": "Что такое Agile?"}))
+    assert kind == "final" and answer["grounded"]
+    assert answer["answer"].startswith(definition)
+    assert quote not in answer["answer"]
+    assert [source["id"] for source in answer["sources"]] == ["agile--principles", "agile--values"]
+    assert answer["sources"][0]["evidence"] == [quote]
+
+
+@pytest.mark.parametrize(("editor_reply", "keeps_extra"), [
+    ({"keep": [1]}, False),
+    ({"keep": [2]}, True),
+    ({"keep": [1], "text": "Новый неподтверждённый вывод."}, True),
+])
+async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(browser_api, editor_reply, keeps_extra):
+    question = "Кто выполняет обязанности Product Owner?"
+    extra = "Developers создают пригодный к использованию Increment"
+    calls = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        calls.append(prompt)
+        if len(calls) == 1:
+            source = next(item for item in prompt["sources"] if FACT in item["text"] and extra in item["text"])
+            blocks = [cited_block(source, FACT, PARAPHRASE), cited_block(source, extra, f"{extra}.")]
+            return openrouter_response({"status": "answered", "blocks": blocks})
+        assert prompt["question"] == question
+        assert [(block["number"], block["text"]) for block in prompt["blocks"]] == [
+            (1, PARAPHRASE), (2, f"{extra}."),
+        ]
+        return openrouter_response(editor_reply)
+
+    async with browser_api(provider) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+    assert len(calls) == 2
+    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
+    assert answer["answer"].startswith(PARAPHRASE)
+    assert (extra in answer["answer"]) is keeps_extra
+    assert "Новый неподтверждённый вывод" not in answer["answer"]
+    assert answer["sources"][0]["evidence"] == ([FACT, extra] if keeps_extra else [FACT])
+
+
+async def test_related_topic_with_a_real_quote_does_not_answer_a_different_definition(browser_api):
+    question = "Что такое Agile Release Train?"
+    quote = "Принципы Agile связывают ценность с ранней и регулярной поставкой работающего программного продукта."
+    calls = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        calls.append(prompt)
+        if len(calls) == 1:
+            part = next(item for item in prompt["sources"] if quote in item["text"])
+            block = cited_block(part, quote, "Agile Release Train — подход, который помогает регулярно поставлять работающий продукт.")
+            return openrouter_response({"status": "answered", "blocks": [block]})
+        return openrouter_response({"status": "insufficient", "blocks": [], "note": (
+            "В базе нет определения Agile Release Train. Есть материалы об общих принципах Agile."
+        )})
+
+    async with browser_api(provider) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+    assert len(calls) >= 2
+    assert kind == "final" and answer["status"] == "insufficient"
+    assert answer["sources"] == [] and not answer["grounded"]
+    assert "Agile Release Train" in answer["answer"]
 
 
 async def test_prompt_injection_in_corpus_cannot_be_used_as_evidence():
@@ -134,7 +222,7 @@ async def test_prompt_injection_in_corpus_cannot_be_used_as_evidence():
 async def test_university_policy_cannot_be_attributed_to_scrum_guide(browser_api):
     def provider(request):
         payload = cited_payload(model_prompt(request))
-        payload["answer"] = "УрФУ требует назначать Product Owner."
+        payload["blocks"][0]["text"] = "УрФУ требует назначать Product Owner."
         return openrouter_response(payload)
 
     async with browser_api(provider) as client:
@@ -165,14 +253,16 @@ async def test_model_failure_has_readable_error_without_secrets(browser_api):
         assert TEST_KEY not in str(result)
 
 
-async def test_invalid_citation_is_repaired_with_feedback(browser_api):
+async def test_fabricated_quote_is_repaired_with_feedback(browser_api):
     calls = []
 
     def provider(request):
         prompt = model_prompt(request)
         calls.append(prompt)
         if len(calls) == 1:
-            return openrouter_response(cited_payload(prompt, source_id="S99.9"))
+            payload = cited_payload(prompt)
+            payload["blocks"][0]["evidence"][0]["quote"] = "Product Owner — это должность преподавателя."
+            return openrouter_response(payload)
         assert "review" in prompt
         return openrouter_response(cited_payload(prompt))
 
@@ -181,7 +271,7 @@ async def test_invalid_citation_is_repaired_with_feedback(browser_api):
         assert len(calls) == 2
         assert kind == "final", result
         assert result["grounded"] is True
-        assert FACT in result["answer"]
+        assert PARAPHRASE in result["answer"]
 
 
 async def test_partial_answer_survives_failed_follow_up_generation(browser_api):
@@ -201,11 +291,11 @@ async def test_partial_answer_survives_failed_follow_up_generation(browser_api):
         assert len(calls) == 2
         assert kind == "final", result
         assert result["grounded"] is True
-        assert FACT in result["answer"]
+        assert PARAPHRASE in result["answer"]
         assert result["retrieval"]["warnings"]
 
 
-async def test_deepseek_is_default_and_selection_retries_once_on_timeout(browser_api):
+async def test_deepseek_is_default_and_answer_retries_once_on_timeout(browser_api):
     calls = []
 
     def provider(request):
@@ -222,10 +312,10 @@ async def test_deepseek_is_default_and_selection_retries_once_on_timeout(browser
         kind, result = event_rows(await client.post("/api/chat", json={"message": TEAM_QUESTION}))
     assert len(calls) == 2
     assert kind == "final" and result["status"] == "answered" and result["grounded"]
-    assert FACT in result["answer"]
+    assert PARAPHRASE in result["answer"]
 
 
-async def test_repeated_provider_timeouts_show_related_source_without_claiming_an_answer(browser_api):
+async def test_repeated_provider_timeouts_do_not_present_related_material_as_an_answer(browser_api):
     calls = []
 
     def provider(request):
@@ -237,9 +327,8 @@ async def test_repeated_provider_timeouts_show_related_source_without_claiming_a
         kind, result = event_rows(await client.post("/api/chat", json={"message": TEAM_QUESTION}))
     assert len(calls) == 2
     assert kind == "final" and result["status"] == "unavailable" and not result["grounded"]
-    assert "Модель сейчас недоступна" in result["answer"]
-    assert result["sources"][0]["document_id"] == "scrum"
-    assert result["sources"][0]["evidence"][0] in result["answer"]
+    assert result["answer"]
+    assert result["sources"] == []
 
 
 @pytest.mark.parametrize("message", ["че за хуйня", "Не понял.", "???"])
@@ -277,7 +366,9 @@ async def test_topic_intro_preserves_a_concrete_question(browser_api, message):
     def provider(request):
         prompt = model_prompt(request)
         part = next(item for item in prompt["sources"] if "Для определения границ проекта" in item["text"])
-        return openrouter_response({"status": "answered", "passages": [part["id"]]})
+        return openrouter_response({"status": "answered", "blocks": [
+            cited_block(part, "Для определения границ проекта команда фиксирует проблему"),
+        ]})
 
     async with browser_api(provider) as client:
         kind, result = event_rows(await client.post("/api/chat", json={"message": message}))
@@ -288,7 +379,7 @@ async def test_topic_intro_preserves_a_concrete_question(browser_api, message):
 async def test_model_can_ask_for_clarification_without_suggesting_passages(browser_api):
     def provider(request):
         model_prompt(request)
-        return openrouter_response({"status": "clarify", "passages": []})
+        return openrouter_response({"status": "clarify", "blocks": []})
 
     async with browser_api(provider) as client:
         kind, result = event_rows(await client.post("/api/chat", json={"message": "Вообще я имел в виду планирование."}))
@@ -301,7 +392,9 @@ async def test_short_new_question_does_not_inherit_old_topic(browser_api):
         prompt = model_prompt(request)
         assert prompt["previous_question"] == ""
         part = next(item for item in prompt["sources"] if "WIP — работа" in item["text"])
-        return openrouter_response({"status": "answered", "passages": [part["id"]]})
+        return openrouter_response({"status": "answered", "blocks": [
+            cited_block(part, "WIP — работа, которую уже начали и ещё не закончили."),
+        ]})
 
     history = [{"role": "user", "content": TEAM_QUESTION}]
     async with browser_api(provider) as client:
@@ -340,17 +433,32 @@ async def test_missing_definition_does_not_return_related_passages(browser_api, 
     assert answer["sources"] == [] and not answer["grounded"]
 
 
-@pytest.mark.parametrize(("question", "definition", "source_id"), [
-    ("Что такое Scrum Team?", "Scrum Team — небольшая самоуправляемая кросс-функциональная команда", "scrum--team"),
-    ("Что такое SLE?", "SLE (Service Level Expectation) — вероятностный прогноз", "kanban--sle"),
+@pytest.mark.parametrize(("question", "definition", "quote", "source_id"), [
+    (
+        "Что такое Scrum Team?",
+        "Scrum Team — небольшая команда с самоуправлением и разными навыками.",
+        "Scrum Team — небольшая самоуправляемая кросс-функциональная команда",
+        "scrum--team",
+    ),
+    (
+        "Что такое SLE?",
+        "SLE — вероятностная оценка времени выполнения работы.",
+        "SLE (Service Level Expectation) — вероятностный прогноз",
+        "kanban--sle",
+    ),
 ])
-async def test_direct_definition_returns_the_passage_with_evidence(browser_api, question, definition, source_id):
-    async with browser_api(never_call_openrouter) as client:
+async def test_direct_definition_is_answered_with_evidence(browser_api, question, definition, quote, source_id):
+    def provider(request):
+        prompt = model_prompt(request)
+        part = next(item for item in prompt["sources"] if quote in item["text"])
+        return openrouter_response({"status": "answered", "blocks": [cited_block(part, quote, definition)]})
+
+    async with browser_api(provider) as client:
         kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
     assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
     assert definition in answer["answer"]
     assert [source["id"] for source in answer["sources"]] == [source_id]
-    assert definition in answer["sources"][0]["evidence"][0]
+    assert answer["sources"][0]["evidence"] == [quote]
 
 
 async def test_underspecified_team_plan_can_return_source_and_request_context(browser_api):
@@ -359,15 +467,16 @@ async def test_underspecified_team_plan_can_return_source_and_request_context(br
     def provider(request):
         prompt = model_prompt(request)
         part = next(item for item in prompt["sources"] if "границ проекта" in item["text"])
-        other_ids = [item["id"] for item in prompt["sources"] if item != part][:2]
-        return openrouter_response({"status": "answered", "passages": [part["id"], *other_ids]})
+        return openrouter_response({"status": "project_details", "blocks": [
+            cited_block(part, "Для определения границ проекта команда фиксирует проблему, заинтересованных людей"),
+        ]})
 
     async with browser_api(provider) as client:
         kind, result = event_rows(await client.post("/api/chat", json={"message": question}))
     assert kind == "final" and result["status"] == "project_details"
     assert "Уточните, какой результат нужен" in result["answer"]
     assert result["sources"][0]["evidence"][0] in result["answer"]
-    assert sum(len(source["evidence"]) for source in result["sources"]) == 2
+    assert sum(len(source["evidence"]) for source in result["sources"]) == 1
 
 
 async def test_missing_key_allows_library_without_calling_provider(browser_api):
@@ -419,7 +528,7 @@ async def test_campus_mention_does_not_block_method_answer(browser_api, question
         kind, result = event_rows(await client.post("/api/chat", json={"message": question}))
         assert kind == "final"
         assert result["grounded"] is True
-        assert FACT in result["answer"]
+        assert PARAPHRASE in result["answer"]
 
 
 @pytest.mark.parametrize("payload", [

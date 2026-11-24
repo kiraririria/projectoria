@@ -16,7 +16,7 @@ class Settings:
     chat_model: str = DEFAULT_CHAT_MODEL
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     rerank_model: str = ""
-    max_tokens: int = 320
+    max_tokens: int = 1100
     index_path: Path = ROOT / "knowledge/index.json"
     vectors_path: Path = ROOT / "knowledge/vectors.json"
 

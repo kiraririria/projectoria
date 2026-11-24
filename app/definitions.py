@@ -5,8 +5,9 @@ from app.schemas import Message
 from app.verify import Passage, normalized, source_passages
 
 DEFINITION_QUESTION = re.compile(
-    r"(?:что\s+такое|что\s+означает|дай(?:те)?\s+определение)\s+"
-    r"(?P<term>[«\"]?[\w+#/.-]+(?:[ \t]+[\w+#/.-]+){0,4}[»\"]?)[.!?…]*",
+    r"(?:а\s+)?(?:что\s+такое|что\s+означает|дай(?:те)?\s+определение)\s+"
+    r"(?P<term>[«\"]?[\w+#/.-]+(?:[ \t]+[\w+#/.-]+){0,4}?[»\"]?)"
+    r"(?:(?:,?\s+)(?:простыми словами|своими словами|в двух словах|кратко|пожалуйста))*[.!?…]*",
     re.I,
 )
 DEFINITION_LINE = re.compile(
@@ -18,11 +19,17 @@ SCRUM_SPELLING = "Вы имели в виду Scrum?"
 CONFIRMATION = re.compile(r"да(?:\s*,?\s*(?:scrum|скрам))?[.!?…]*", re.I)
 ACRONYM = re.compile(r"[A-ZА-ЯЁ]{2,8}")
 ALIASES = {"скрам": "scrum"}
+METHODOLOGY_CONTEXT = re.compile(r"\s+в\s+(?:scrum|скраме|agile|kanban|канбане|проекте|разработке)$", re.I)
 
 
 def requested_term(message: str) -> str:
     match = DEFINITION_QUESTION.fullmatch(message)
-    return match["term"].strip('«»"').rstrip(".") if match else ""
+    if not match:
+        return ""
+    term = match["term"].strip('«»"').rstrip(".")
+    if re.search(r"\b(?:и|или)\s+(?:как|чем|кто|где|почему|что|когда|зачем|можно|нужно)\b", term, re.I):
+        return ""
+    return METHODOLOGY_CONTEXT.sub("", term)
 
 
 def confirmed_scrum(message: str, history: list[Message]) -> bool:
