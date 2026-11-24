@@ -83,11 +83,11 @@ def never_call_openrouter(request):
     pytest.fail(f"Недопустимый запрос к OpenRouter: {request.method} {request.url.path}")
 
 
-async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api):
-    history = [
-        {"role": "user", "content": TEAM_QUESTION},
-        {"role": "assistant", "content": "Обсудим три зоны ответственности команды."},
-    ]
+@pytest.mark.parametrize("include_legacy_reply", [False, True])
+async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api, include_legacy_reply):
+    history = [{"role": "user", "content": TEAM_QUESTION}]
+    if include_legacy_reply:
+        history.append({"role": "assistant", "content": "Обсудим три зоны ответственности команды."})
     question = "А если двое занимаются frontend?"
     captured = []
 

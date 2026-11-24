@@ -226,17 +226,41 @@ function parseEvent(frame) {
   return event && data.length ? { event, payload: JSON.parse(data.join("\n")) } : null;
 }
 
-async function streamReply(message, history, signal, onStatus) {
-  const encoder = new TextEncoder();
-  let body = JSON.stringify({ message, history });
-  while (history.length && encoder.encode(body).byteLength > 64 * 1024) {
-    history = history.slice(2);
-    body = JSON.stringify({ message, history });
+// Keep these checks aligned with the server's dialog rules in retrieval.py and definitions.py.
+const followUp = /^\s*(?:а\s+)?(?:если|тогда|в таком случае|покажи пример|что насч[её]т|можешь уточнить|как (?:это|именно)|какие из них|кто за это|продолжи)(?![\p{L}\p{N}_])/iu;
+const reaction = /^(?:[\s.!?…]+|(?:что|ч[её]|шо)\s+(?:это\s+)?за\s+(?:х[у*]йн[яю]|фигн[яю]|ерунд[ау]|бред|дичь|хрень|хрен[ья])[\s.!?…]*|(?:не понял[аи]?|не понимаю|непонятно|что это такое|что это было)[\s.!?…]*)$/iu;
+const scrumConfirmation = /^да(?:\s*,?\s*(?:scrum|скрам))?[.!?…]*$/iu;
+const scrumSpelling = "Вы имели в виду Scrum?";
+
+function dialogHistory(question, turns) {
+  const latest = turns.at(-1);
+  if (!latest) return [];
+
+  if (scrumConfirmation.test(question) && latest.result.answer === scrumSpelling) {
+    return [
+      { role: "user", content: latest.question },
+      { role: "assistant", content: scrumSpelling },
+    ];
   }
+
+  const isReaction = reaction.test(question);
+  if (!isReaction && !followUp.test(question)) return [];
+
+  // The server only needs to know that a dialog exists when handling a reaction.
+  const previous = isReaction ? latest : turns.slice(-4).findLast((turn) => !reaction.test(turn.question));
+  if (!previous) return [];
+
+  const excerpt = Array.from(previous.question).slice(0, 700).join("").trimEnd();
+  // Keep a question that could otherwise look like a reaction after truncation.
+  const content = !isReaction && reaction.test(excerpt) ? previous.question : excerpt;
+  return [{ role: "user", content }];
+}
+
+async function streamReply(message, history, signal, onStatus) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body,
+    body: JSON.stringify({ message, history }),
     signal,
   });
   if (!response.ok) throw await responseError(response);
@@ -275,10 +299,7 @@ async function submitQuestion(event) {
   failedTurn = undefined;
   announcement.textContent = "";
 
-  const history = conversation.turns.slice(-4).flatMap((entry) => [
-    { role: "user", content: entry.question },
-    { role: "assistant", content: Array.from(entry.result.answer).slice(0, 3000).join("") },
-  ]);
+  const history = dialogHistory(question, conversation.turns);
   activeRequest = new AbortController();
   showThread(true);
   const { turn, reply } = renderQuestion(question);
