@@ -139,6 +139,25 @@ async def test_idempotency_across_instances_and_duplicate_content(setup):
     assert len(messages) == 1
 
 
+async def test_marketplace_environment_drives_feedback_and_alert_dedup(setup, monkeypatch):
+    original, _, messages, _, _, app, _ = setup
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.setenv("KV_REST_API_URL", original.redis_url)
+    monkeypatch.setenv("KV_REST_API_TOKEN", original.redis_token)
+    monkeypatch.setenv("UPSTASH_REDIS_REST_URL", "")
+    monkeypatch.setenv("UPSTASH_REDIS_REST_TOKEN", "")
+    env = Settings.from_env()
+    config = replace(original, redis_url=env.redis_url, redis_token=env.redis_token)
+    key = str(uuid4())
+    async with client(app(config)) as api:
+        assert (await submit(api, key=key)).status_code == 201
+        assert (await submit(api, key=key)).status_code == 200
+        for _ in range(2):
+            assert (await api.post("/api/chat", json={"message": "fixture-question"})).status_code == 503
+    assert len(messages) == 2
+    assert messages[0]["text"].startswith("#feedback") and messages[1]["text"].startswith("#error")
+
+
 async def test_client_rate_limit_and_retry_after(setup):
     _, redis, messages, _, _, app, _ = setup
     async with client(app()) as api:
