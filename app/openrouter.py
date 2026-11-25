@@ -8,6 +8,7 @@ import httpx
 from app.config import OPENROUTER_URL, Settings
 from app.diagnostics import ChatDiagnostics
 from app.knowledge import unit_vector
+from app.token_budget import estimate_input_tokens
 
 MODEL_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}")
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -39,6 +40,10 @@ class ProviderTimeout(TemporaryProviderError):
     pass
 
 
+class InputLimitExceeded(ProviderError):
+    pass
+
+
 class InvalidCompletion(ProviderError):
     pass
 
@@ -63,14 +68,15 @@ class OpenRouter:
         stage = {"embeddings": "embedding", "rerank": "rerank", "chat/completions": "generation"}[path]
         estimated_input_tokens = None
         if path == "chat/completions":
-            messages = json.dumps(payload["messages"], ensure_ascii=False, separators=(",", ":"))
-            # Approximation for diagnostics, since the provider counts with the model's own tokenizer.
-            estimated_input_tokens = (len(messages.encode("utf-8")) + 3) // 4
+            estimated_input_tokens = estimate_input_tokens(payload["messages"])
         metrics = {
             "requested_model": payload.get("model"),
             "operation": operation,
             "estimated_input_tokens": estimated_input_tokens,
         }
+        if estimated_input_tokens is not None and estimated_input_tokens > self.settings.max_input_tokens:
+            self.diagnostics.record(stage, started, outcome="blocked", reason="input_token_limit", **metrics)
+            raise InputLimitExceeded("Вопрос и материалы получились слишком длинными. Сократите вопрос и повторите.")
         usage = {}
         try:
             async with asyncio.timeout(timeout):

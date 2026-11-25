@@ -15,6 +15,7 @@ class ChatDiagnostics:
     def record(
         self, stage, started, *, outcome="ok", reason=None, model=None, requested_model=None,
         http_status=None, operation=None, estimated_input_tokens=None, usage=None,
+        history_removed=0, passages_removed=0,
     ):
         event = {
             "request_id": self.request_id,
@@ -36,5 +37,9 @@ class ChatDiagnostics:
             event["estimated_input_tokens"] = estimated_input_tokens
         if usage:
             event["usage"] = usage
+        if history_removed:
+            event["history_removed"] = history_removed
+        if passages_removed:
+            event["passages_removed"] = passages_removed
         level = logging.INFO if reason is None else logging.WARNING
         logger.log(level, "%s", json.dumps(event, ensure_ascii=False, separators=(",", ":")))
