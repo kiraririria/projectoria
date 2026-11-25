@@ -15,6 +15,9 @@ const backButton = byId("panel-back");
 const announcement = byId("announcement");
 const storageKey = "proektoria.history.v1";
 const dateFormat = new Intl.DateTimeFormat("ru", { dateStyle: "medium", timeStyle: "short" });
+const replyStatuses = new Set(["answered", "partial", "project_details", "insufficient", "unrelated", "clarify", "unavailable"]);
+const retrievalModes = new Set(["none", "lexical", "hybrid"]);
+const incompleteReply = "Получен неполный ответ. Попробуйте ещё раз.";
 
 let conversations = readHistory();
 let conversation = { turns: [] };
@@ -201,19 +204,24 @@ async function responseError(response) {
   if (response.status === 429) {
     const retryAfter = response.headers.get("Retry-After");
     const seconds = /^\d+$/.test(retryAfter ?? "") ? Number(retryAfter) : Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000);
-    let advice = "Попробуйте чуть позже.";
-    if (Number.isSafeInteger(seconds) && seconds > 0) {
-      const useMinutes = seconds >= 60;
-      const delay = new Intl.NumberFormat("ru", { style: "unit", unit: useMinutes ? "minute" : "second", unitDisplay: "long" })
-        .format(useMinutes ? Math.ceil(seconds / 60) : seconds);
-      advice = `Повторите запрос через ${delay}.`;
-    }
-    return new Error(`Сервис получает слишком много запросов. ${advice}`);
+    return new Error(`Сервис получает слишком много запросов. ${retryAdvice(seconds) || "Попробуйте чуть позже."}`);
   }
   const data = await response.json().catch(() => null);
   if (typeof data?.detail === "string") return new Error(data.detail);
   if (response.status === 413 || response.status === 422) return new Error("Проверьте длину вопроса и попробуйте снова.");
   return new Error("Сервис временно недоступен. Попробуйте ещё раз.");
+}
+
+function retryAdvice(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
+  const useMinutes = seconds >= 60;
+  const delay = new Intl.NumberFormat("ru", { style: "unit", unit: useMinutes ? "minute" : "second", unitDisplay: "long" })
+    .format(useMinutes ? Math.ceil(seconds / 60) : seconds);
+  return `Повторите запрос через ${delay}.`;
+}
+
+function chatFailure(message, seconds) {
+  return new Error([message, retryAdvice(seconds)].filter(Boolean).join(" "));
 }
 
 function parseEvent(frame) {
@@ -240,23 +248,33 @@ async function streamReply(message, history, signal, onStatus) {
     signal,
   });
   if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new Error("Ответ не получен. Попробуйте ещё раз.");
+  const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+  if (!response.body || mediaType !== "text/event-stream") throw new Error(incompleteReply);
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   try {
     for (;;) {
       const { done, value } = await reader.read();
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       const frames = buffer.split(/\r?\n\r?\n/);
-      buffer = done ? "" : frames.pop();
+      buffer = frames.pop();
       for (const frame of frames) {
         const received = parseEvent(frame);
         if (!received) continue;
         const { event, payload } = received;
-        if (event === "status" && typeof payload.message === "string") onStatus(payload.message);
-        if (event === "error") throw new Error(payload.message || "Не удалось получить ответ. Попробуйте ещё раз.");
-        if (event === "final" && typeof payload.answer === "string") return payload;
+        if (event === "status" && typeof payload?.message === "string") onStatus(payload.message);
+        if (event === "error") {
+          const message = typeof payload?.message === "string" && payload.message.trim()
+            ? payload.message : "Не удалось получить ответ. Попробуйте ещё раз.";
+          throw chatFailure(message, payload?.retry_after_seconds);
+        }
+        if (event === "final") {
+          if (typeof payload?.answer !== "string" || !payload.answer.trim() || !replyStatuses.has(payload.status)
+            || !Array.isArray(payload.sources) || typeof payload.grounded !== "boolean"
+            || !retrievalModes.has(payload.retrieval?.mode)) throw new Error(incompleteReply);
+          return payload;
+        }
       }
       if (done) break;
     }
@@ -273,41 +291,62 @@ async function submitQuestion(event) {
   if (activeRequest || !question) return;
   failedTurn?.remove();
   failedTurn = undefined;
-  announcement.textContent = "";
 
   const history = conversation.turns.slice(-4).flatMap((entry) => [
     { role: "user", content: entry.question },
     { role: "assistant", content: Array.from(entry.result.answer).slice(0, 3000).join("") },
   ]);
-  activeRequest = new AbortController();
   showThread(true);
-  const { turn, reply } = renderQuestion(question);
+  await requestReply(question, history, renderQuestion(question), true);
+}
+
+async function requestReply(question, history, exchange, clearInput = false) {
+  if (activeRequest) return;
+  const { turn, reply } = exchange;
+  const focused = document.activeElement;
+  const focusInput = focused === sendButton || reply.contains(focused);
+  const controller = new AbortController();
+  activeRequest = controller;
+  announcement.textContent = "";
   const pending = element("div", "pending");
   pending.setAttribute("role", "status");
   const status = element("span", "", "Ищу материалы по вопросу…");
   pending.append(element("span", "pending-indicator"), status);
-  reply.append(pending);
-  input.value = "";
+  reply.replaceChildren(pending);
+  if (clearInput) input.value = "";
   updateComposer();
+  if (focusInput && !panel.open) input.focus({ preventScroll: true });
   turn.scrollIntoView({ block: "nearest" });
 
+  let retry;
   try {
-    const result = await streamReply(question, history, activeRequest.signal, (message) => { status.textContent = message; });
+    const result = await streamReply(question, history, controller.signal, (message) => { status.textContent = message; });
+    controller.signal.throwIfAborted();
+    if (result.status === "unavailable") throw chatFailure(result.answer, result.retry_after_seconds);
     reply.replaceChildren(renderAnswer(result));
     saveTurn(question, result);
+    failedTurn = undefined;
     announcement.textContent = "Ответ готов";
   } catch (error) {
-    let message = error.message;
-    if (error.name === "AbortError") message = "Ответ остановлен. Вопрос сохранён в поле ввода.";
-    if (error instanceof TypeError || error instanceof SyntaxError) message = "Не удалось получить ответ. Проверьте соединение и попробуйте ещё раз.";
-    reply.replaceChildren(notice(message, error.name !== "AbortError"));
+    const stopped = controller.signal.aborted;
+    const restoredDraft = !input.value;
+    if (restoredDraft) input.value = question;
+    let message = stopped ? "Получение ответа остановлено." : error.message;
+    if (!stopped && (error instanceof TypeError || error instanceof SyntaxError)) {
+      message = "Не удалось получить ответ. Проверьте соединение и попробуйте ещё раз.";
+    }
+    retry = button("text-button", "Повторить вопрос", () => {
+      const clearRestoredDraft = restoredDraft && input.value === question;
+      return requestReply(question, history, exchange, clearRestoredDraft);
+    });
+    reply.replaceChildren(notice(message, !stopped), retry);
+    if (stopped) announcement.textContent = message;
     failedTurn = turn;
-    if (!input.value.trim()) input.value = question;
   } finally {
     const returnFocus = document.activeElement === stopButton;
     activeRequest = undefined;
     updateComposer();
-    if (returnFocus && !panel.open) sendButton.focus({ preventScroll: true });
+    if (returnFocus && !panel.open) (retry ?? input).focus();
     if (panel.open && panelView === "history") renderHistory(false);
   }
 }
