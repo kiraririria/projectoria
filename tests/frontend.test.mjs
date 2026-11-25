@@ -88,7 +88,7 @@ function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
   };
   const window = new Element(document);
   window.scrollTo = () => {};
-  const { streamReply, excerptWithEvidence } = runInNewContext(`${clientSource}\n({ streamReply, excerptWithEvidence });`, {
+  const { streamReply, excerptWithEvidence, dialogHistory } = runInNewContext(`${clientSource}\n({ streamReply, excerptWithEvidence, dialogHistory });`, {
     document, window, fetch, localStorage, AbortController, TextDecoder, TextEncoder,
     navigator: useLocks ? { locks } : {},
     renderMarkdown: (text) => new Element(document, text),
@@ -108,7 +108,16 @@ function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
     assert.ok(entry, `Missing history entry: ${title}`);
     entry.children[0].dispatch("click");
   }
-  return { document, get, send, streamReply, values, openHistory, selectChat, excerptWithEvidence, window };
+  return { document, get, send, streamReply, values, openHistory, selectChat, excerptWithEvidence, window, dialogHistory };
+}
+
+const dialogCases = JSON.parse(readFileSync(new URL("./dialog_cases.json", import.meta.url), "utf8"));
+for (const scenario of dialogCases) {
+  test(`browser context matches server scenario: ${scenario.id}`, () => {
+    const tab = browser(() => assert.fail("No request expected"));
+    const turns = scenario.turns.map(([question, answer]) => ({ question, result: { answer } }));
+    assert.deepEqual(JSON.parse(JSON.stringify(tab.dialogHistory(scenario.message, turns))), scenario.expected);
+  });
 }
 
 function event(name, payload) {
@@ -136,7 +145,7 @@ test("unavailable reply can be retried with its original history while preservin
   });
   await tab.send("Первый вопрос");
   tab.get("send").focus();
-  await tab.send("Второй вопрос");
+  await tab.send("Почему ты сказал это?");
   assert.equal(tab.document.activeElement, tab.get("question"));
   assert.notEqual(tab.get("announcement").textContent, "Ответ готов");
   const reply = tab.get("turns").children.at(-1).children.at(-1);

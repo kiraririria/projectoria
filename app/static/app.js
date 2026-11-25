@@ -325,6 +325,58 @@ function parseEvent(frame) {
   return event && data.length ? { event, payload: JSON.parse(data.join("\n")) } : null;
 }
 
+const followUp = /^\s*(?:а\s+)?(?:если|тогда|в таком случае|покажи пример|что насч[её]т|можешь уточнить|как (?:это|именно)|какие из них|кто за это|продолжи)(?![\p{L}\p{N}_])|^\s*а\s+(?:кто|когда|где|почему|зачем|сколько)(?![\p{L}\p{N}_])/iu;
+const reaction = /^(?:[\s.!?…]+|(?:что|ч[её]|шо)\s+(?:это\s+)?за\s+(?:х[у*]йн[яю]|фигн[яю]|ерунд[ау]|бред|дичь|хрень|хрен[ья])[\s.!?…]*|(?:не понял[аи]?|не понимаю|непонятно|что это такое|что это было)[\s.!?…]*)$/iu;
+const scrumConfirmation = /^да(?:\s*,?\s*(?:scrum|скрам))?[.!?…]*$/iu;
+const scrumSpelling = "Вы имели в виду Scrum?";
+
+const replyReference = /^\s*(?:а\s+)?(?:почему ты (?:сказал[аи]?|написал[аи]?|ответил[аи]?)|что ты (?:имел[аи]? в виду|подразумевал[аи]?)|в (?:тво[её]м|прошлом|предыдущем) (?:ответе|сообщении))(?![\p{L}\p{N}_])/iu;
+const continuesTopic = (question) => followUp.test(question) || replyReference.test(question);
+
+function historyExcerpt(text) {
+  return Array.from(text).slice(0, 700).join("").trimEnd();
+}
+
+function dialogHistory(question, turns) {
+  const latest = turns.at(-1);
+  if (!latest) return [];
+
+  if (scrumConfirmation.test(question) && latest.result.answer === scrumSpelling) {
+    return [
+      { role: "user", content: latest.question },
+      { role: "assistant", content: scrumSpelling },
+    ];
+  }
+
+  if (reaction.test(question)) return [{ role: "user", content: historyExcerpt(latest.question) }];
+  if (!continuesTopic(question)) return [];
+
+  const recent = [];
+  let anchor;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (reaction.test(turn.question)) continue;
+    if (!continuesTopic(turn.question)) {
+      anchor = turn;
+      break;
+    }
+    if (recent.length < 2) recent.unshift(turn);
+  }
+
+  const relevant = anchor ? [anchor, ...recent] : recent;
+  const history = relevant.map(({ question }) => {
+    const excerpt = historyExcerpt(question);
+    // A leading reaction or follow-up prefix can change classification when cut mid-word.
+    const content = reaction.test(excerpt) || continuesTopic(question) !== continuesTopic(excerpt) ? question : excerpt;
+    return { role: "user", content };
+  });
+  const previousReply = relevant.at(-1)?.result.answer;
+  if (replyReference.test(question) && previousReply?.trim()) {
+    history.push({ role: "assistant", content: historyExcerpt(previousReply.trim()) });
+  }
+  return history;
+}
+
 async function streamReply(message, history, signal, onStatus) {
   const encoder = new TextEncoder();
   let body = JSON.stringify({ message, history });
@@ -384,10 +436,7 @@ async function submitQuestion(event) {
   failedTurn = undefined;
   failures.delete(conversation.id ?? "");
 
-  const history = conversation.turns.slice(-4).flatMap((entry) => [
-    { role: "user", content: entry.question },
-    { role: "assistant", content: Array.from(entry.result.answer).slice(0, 3000).join("") },
-  ]);
+  const history = dialogHistory(question, conversation.turns);
   showThread(true);
   await requestReply(question, history, renderQuestion(question), true);
 }

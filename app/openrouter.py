@@ -10,6 +10,7 @@ import httpx
 from app.config import OPENROUTER_URL, Settings
 from app.diagnostics import ChatDiagnostics
 from app.knowledge import unit_vector
+from app.token_budget import estimate_input_tokens
 
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 PROVIDER_PRIVACY = {"data_collection": "deny"}
@@ -36,6 +37,12 @@ class TemporaryProviderError(ProviderError):
 
 class InvalidCompletion(ProviderError):
     pass
+
+
+class InputLimitExceeded(ProviderError):
+    def __init__(self):
+        super().__init__("Вопрос и материалы получились слишком длинными. Сократите вопрос и повторите.",
+                         code="input_token_limit")
 
 
 def retry_delay(header: str | None) -> int | None:
@@ -90,8 +97,15 @@ class OpenRouter:
 
     async def post(self, path: str, payload: dict, timeout: float, *, stage: str) -> dict:
         started = monotonic()
-        outcome, status, usage = "internal_error", None, None
+        outcome, status, usage, actual_model = "internal_error", None, None, None
+        estimated = estimate_input_tokens(payload["messages"]) if path == "chat/completions" else None
+        operation = {"generation": "answer", "expansion": "expanded_search", "expansion_repair": "repair"}.get(stage, stage)
         try:
+            if estimated is not None and estimated > self.settings.max_input_tokens:
+                if self.diagnostics:
+                    self.diagnostics.stage("input_budget", started, "blocked", code="input_token_limit",
+                                           operation=operation, estimated_input_tokens=estimated)
+                raise InputLimitExceeded()
             try:
                 async with asyncio.timeout(timeout):
                     limits = httpx.Timeout(timeout, connect=min(4.0, timeout))
@@ -109,6 +123,7 @@ class OpenRouter:
                     if not isinstance(result, dict):
                         raise ValueError("invalid provider envelope")
                     usage = result.get("usage")
+                    actual_model = result.get("model")
                     error = result.get("error")
                     choices = result.get("choices") if path == "chat/completions" else None
                     if not error and isinstance(choices, list) and choices and isinstance(choices[0], dict):
@@ -134,7 +149,11 @@ class OpenRouter:
             raise
         finally:
             if self.diagnostics:
-                self.diagnostics.provider_call(stage, started, outcome, status, usage)
+                if status is not None or outcome != "input_token_limit":
+                    self.diagnostics.provider_call(
+                        stage, started, outcome, status, usage, operation=operation,
+                        requested_model=payload.get("model"), model=actual_model, estimated_input_tokens=estimated,
+                    )
 
     async def embed(self, texts: list[str], *, timeout: float = 3.5) -> list[tuple[float, ...]]:
         data = await self.post("embeddings", {
