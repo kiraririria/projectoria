@@ -12,7 +12,10 @@ class ChatDiagnostics:
         self.request_id = uuid4().hex
         self.phase = "knowledge"
 
-    def record(self, stage, started, *, outcome="ok", reason=None, model=None, requested_model=None, http_status=None):
+    def record(
+        self, stage, started, *, outcome="ok", reason=None, model=None, requested_model=None,
+        http_status=None, operation=None, estimated_input_tokens=None, usage=None,
+    ):
         event = {
             "request_id": self.request_id,
             "stage": stage,
@@ -27,5 +30,11 @@ class ChatDiagnostics:
             event["requested_model"] = requested_model
         if http_status is not None:
             event["http_status"] = http_status
+        if operation is not None:
+            event["operation"] = operation
+        if estimated_input_tokens is not None:
+            event["estimated_input_tokens"] = estimated_input_tokens
+        if usage:
+            event["usage"] = usage
         level = logging.INFO if reason is None else logging.WARNING
         logger.log(level, "%s", json.dumps(event, ensure_ascii=False, separators=(",", ":")))

@@ -13,6 +13,18 @@ MODEL_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}")
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 PROVIDER_PRIVACY = {"data_collection": "deny"}
 TRANSIENT_STATUS = {408, 500, 502, 503, 504, 520, 522, 524, 529}
+TOKEN_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+
+def token_usage(usage: object) -> dict[str, int]:
+    if not isinstance(usage, dict):
+        return {}
+    counts = {}
+    for field in TOKEN_USAGE_FIELDS:
+        count = usage.get(field)
+        if type(count) is int and count >= 0:
+            counts[field] = count
+    return counts
 
 
 class ProviderError(Exception):
@@ -46,10 +58,20 @@ class OpenRouter:
             transport=transport,
         )
 
-    async def post(self, path: str, payload: dict, timeout: float) -> dict:
+    async def post(self, path: str, payload: dict, timeout: float, *, operation: str | None = None) -> dict:
         started = perf_counter()
         stage = {"embeddings": "embedding", "rerank": "rerank", "chat/completions": "generation"}[path]
-        requested_model = payload.get("model")
+        estimated_input_tokens = None
+        if path == "chat/completions":
+            messages = json.dumps(payload["messages"], ensure_ascii=False, separators=(",", ":"))
+            # Approximation for diagnostics, since the provider counts with the model's own tokenizer.
+            estimated_input_tokens = (len(messages.encode("utf-8")) + 3) // 4
+        metrics = {
+            "requested_model": payload.get("model"),
+            "operation": operation,
+            "estimated_input_tokens": estimated_input_tokens,
+        }
+        usage = {}
         try:
             async with asyncio.timeout(timeout):
                 limits = httpx.Timeout(timeout, connect=min(4.0, timeout))
@@ -61,18 +83,21 @@ class OpenRouter:
                             raise ValueError("oversized provider response")
                         body.extend(part)
                 result = json.loads(body)
-                if not isinstance(result, dict) or result.get("error"):
+                if not isinstance(result, dict):
+                    raise ValueError("invalid provider envelope")
+                usage = token_usage(result.get("usage"))
+                if result.get("error"):
                     raise ValueError("invalid provider envelope")
                 actual_model = result.get("model")
                 if not (isinstance(actual_model, str) and MODEL_ID.fullmatch(actual_model)
                         and not actual_model.lower().startswith("sk-")):
                     actual_model = None
-                self.diagnostics.record(stage, started, model=actual_model, requested_model=requested_model)
+                self.diagnostics.record(stage, started, model=actual_model, usage=usage, **metrics)
                 return result
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            self.diagnostics.record(stage, started, outcome="failed", reason="provider_http", requested_model=requested_model,
-                                    http_status=status)
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_http", http_status=status,
+                                    **metrics)
             if status in {401, 402, 403}:
                 raise ProviderError("Сервис генерации временно недоступен. Попробуйте позже.") from None
             if status == 429:
@@ -81,13 +106,13 @@ class OpenRouter:
                 raise TemporaryProviderError("OpenRouter временно недоступен.") from None
             raise ProviderError("OpenRouter не смог обработать запрос. Попробуйте позже.") from None
         except (httpx.TimeoutException, TimeoutError):
-            self.diagnostics.record(stage, started, outcome="failed", reason="provider_timeout", requested_model=requested_model)
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_timeout", **metrics)
             raise ProviderTimeout("Модель отвечает слишком долго. Повторите ещё раз.") from None
         except httpx.TransportError:
-            self.diagnostics.record(stage, started, outcome="failed", reason="provider_connection", requested_model=requested_model)
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_connection", **metrics)
             raise TemporaryProviderError("Сервис временно недоступен. Попробуйте ещё раз.") from None
         except (httpx.HTTPError, ValueError, RecursionError):
-            self.diagnostics.record(stage, started, outcome="failed", reason="invalid_provider_response", requested_model=requested_model)
+            self.diagnostics.record(stage, started, outcome="failed", reason="invalid_provider_response", usage=usage, **metrics)
             raise ProviderError("Сервис временно недоступен. Попробуйте ещё раз.") from None
 
     async def embed(self, texts: list[str], *, timeout: float = 3.5) -> list[tuple[float, ...]]:
@@ -117,7 +142,7 @@ class OpenRouter:
         except (ValueError, KeyError, TypeError):
             raise ProviderError("Реранкер OpenRouter недоступен.") from None
 
-    async def chat(self, messages: list[dict], *, timeout: float = 20) -> str:
+    async def chat(self, messages: list[dict], *, timeout: float = 20, operation: str = "answer") -> str:
         payload = {
             "model": self.settings.chat_model,
             "messages": messages,
@@ -128,7 +153,7 @@ class OpenRouter:
         }
         if self.settings.chat_model.startswith("deepseek/deepseek-v4"):
             payload["reasoning"] = {"enabled": False}
-        data = await self.post("chat/completions", payload, timeout)
+        data = await self.post("chat/completions", payload, timeout, operation=operation)
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]

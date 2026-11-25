@@ -184,7 +184,7 @@ class Pipeline:
                 yield "status", {"message": "Проверяю дополнительные разделы…"}
                 try:
                     second, wide_issue = await self.generate(
-                        request, router, candidates, term=term, timeout=retry_budget,
+                        request, router, candidates, term=term, timeout=retry_budget, operation="expanded_search",
                         review="Поиск расширен. Проверь новые выдержки и скажи, какой части ответа всё ещё не хватает.",
                     )
                     if wide_issue:
@@ -192,7 +192,8 @@ class Pipeline:
                         if repair_budget >= 6:
                             yield "status", {"message": "Исправляю ответ по результатам сверки…"}
                             second, _ = await self.generate(
-                                request, router, candidates, term=term, timeout=repair_budget, review=wide_issue,
+                                request, router, candidates, term=term, timeout=repair_budget, operation="repair",
+                                review=wide_issue,
                             )
                     if second and (second[0].status in {"answered", "partial"}
                                    or outcome[0].status == second[0].status == "insufficient"):
@@ -207,6 +208,7 @@ class Pipeline:
                 try:
                     outcome, second_issue = await self.generate(
                         request, router, selected, term=term, timeout=retry_budget,
+                        operation="repair" if issue else "retry",
                         review=issue or "Повтори ответ по этому же вопросу и источникам.",
                     )
                     issue = second_issue or issue
@@ -245,7 +247,7 @@ class Pipeline:
             answer, sources = render_answer(blocks, self.knowledge, note=note)
         yield "final", self.result(answer, sources, mode, warnings, status=status)
 
-    async def generate(self, request, router, chunks, *, term, timeout, review=""):
+    async def generate(self, request, router, chunks, *, term, timeout, operation="answer", review=""):
         passages = source_passages(chunks)
         if not passages:
             return (Draft(status="insufficient", blocks=[]), []), ""
@@ -267,7 +269,7 @@ class Pipeline:
             raw = await router.chat([
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ], timeout=timeout)
+            ], timeout=timeout, operation=operation)
             draft = Draft.model_validate_json(raw)
         except (InvalidCompletion, ValidationError):
             router.diagnostics.record("validation", started, outcome="failed", reason="invalid_model_format")
@@ -298,7 +300,7 @@ class Pipeline:
             raw = await router.chat([
                 {"role": "system", "content": EDIT_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ], timeout=timeout)
+            ], timeout=timeout, operation="edit")
             keep = EditSelection.model_validate_json(raw).keep
         except (ProviderError, ValidationError):
             return blocks

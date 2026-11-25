@@ -32,8 +32,9 @@ def event_rows(response):
     return rows[-1]
 
 
-def openrouter_response(payload, finish_reason="stop"):
+def openrouter_response(payload, finish_reason="stop", *, usage=None):
     return httpx.Response(200, json={
+        "usage": usage,
         "choices": [{"finish_reason": finish_reason, "message": {
             "role": "assistant",
             "content": json.dumps(payload, ensure_ascii=False),
@@ -146,7 +147,7 @@ async def test_agile_is_explained_directly_with_short_source_quotes(browser_api)
     ({"keep": [2]}, True),
     ({"keep": [1], "text": "Новый неподтверждённый вывод."}, True),
 ])
-async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(browser_api, editor_reply, keeps_extra):
+async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(browser_api, editor_reply, keeps_extra, caplog):
     question = "Кто выполняет обязанности Product Owner?"
     extra = "Developers создают пригодный к использованию Increment"
     calls = []
@@ -162,7 +163,9 @@ async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(brow
         assert [(block["number"], block["text"]) for block in prompt["blocks"]] == [
             (1, PARAPHRASE), (2, f"{extra}."),
         ]
-        return openrouter_response(editor_reply)
+        return openrouter_response(editor_reply, usage={
+            "prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128, "unexpected": TEST_KEY,
+        })
 
     async with browser_api(provider) as client:
         kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
@@ -172,6 +175,12 @@ async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(brow
     assert (extra in answer["answer"]) is keeps_extra
     assert "Новый неподтверждённый вывод" not in answer["answer"]
     assert answer["sources"][0]["evidence"] == ([FACT, extra] if keeps_extra else [FACT])
+    generations = [event for event in diagnostic_events(caplog) if event["stage"] == "generation"]
+    assert [event["operation"] for event in generations] == ["answer", "edit"]
+    assert all(event["estimated_input_tokens"] > 0 for event in generations)
+    assert "usage" not in generations[0]
+    assert generations[1]["usage"] == {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128}
+    assert "usage" not in answer and TEST_KEY not in caplog.text
 
 
 async def test_related_topic_with_a_real_quote_does_not_answer_a_different_definition(browser_api):
@@ -288,6 +297,7 @@ async def test_fabricated_quote_is_repaired_with_feedback(browser_api, caplog):
     events = diagnostic_events(caplog)
     rejected = next(event for event in events if event.get("reason") == "unverified_answer")
     assert rejected["stage"] == "verification"
+    assert [event["operation"] for event in events if event["stage"] == "generation"] == ["answer", "repair"]
     assert rejected["request_id"] not in str(result)
     assert len({event["request_id"] for event in events}) == 1
 
@@ -351,6 +361,8 @@ async def test_repeated_provider_timeouts_do_not_present_related_material_as_an_
     events = diagnostic_events(caplog)
     timeouts = [event for event in events if event.get("reason") == "provider_timeout"]
     assert len(timeouts) == 2
+    assert [event["operation"] for event in timeouts] == ["answer", "retry"]
+    assert all(event["estimated_input_tokens"] > 0 and "usage" not in event for event in timeouts)
     assert all(event["stage"] == "generation" and event["duration_ms"] >= 0 for event in timeouts)
     assert len({event["request_id"] for event in events}) == 1
     assert timeouts[0]["request_id"] not in str(result)
@@ -593,7 +605,7 @@ async def test_rejects_oversize_streamed_body_and_malformed_json(browser_api):
 
 
 @pytest.mark.parametrize("embedding_available, reranker_available", [(True, True), (False, True), (True, False)])
-async def test_openrouter_search_stages_and_fallback(browser_api, tmp_path, embedding_available, reranker_available):
+async def test_openrouter_search_stages_and_fallback(browser_api, tmp_path, embedding_available, reranker_available, caplog):
     config = Settings()
     knowledge = load_knowledge(config.index_path)
     index = json.loads(config.index_path.read_text(encoding="utf-8"))
@@ -618,7 +630,10 @@ async def test_openrouter_search_stages_and_fallback(browser_api, tmp_path, embe
             assert payload["input"]
             if not embedding_available:
                 return httpx.Response(429, json={"error": {"message": "Временная недоступность эмбеддингов"}})
-            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}], "model": model})
+            return httpx.Response(200, json={
+                "data": [{"index": 0, "embedding": [1.0, 0.0]}], "model": model,
+                "usage": {"prompt_tokens": 31, "total_tokens": 31, "completion_tokens": False},
+            })
         if request.url.path.endswith("/rerank"):
             payload = json.loads(request.content)
             rerank_requests.append(payload)
@@ -636,3 +651,9 @@ async def test_openrouter_search_stages_and_fallback(browser_api, tmp_path, embe
         assert answer["retrieval"]["mode"] == ("hybrid" if embedding_available else "lexical")
         assert bool(rerank_requests) is embedding_available
         assert bool(answer["retrieval"]["warnings"]) is (not embedding_available or not reranker_available)
+
+    embedding = next(event for event in diagnostic_events(caplog) if event["stage"] == "embedding")
+    if embedding_available:
+        assert embedding["usage"] == {"prompt_tokens": 31, "total_tokens": 31}
+    else:
+        assert "usage" not in embedding
