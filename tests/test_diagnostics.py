@@ -42,7 +42,7 @@ async def chat(app):
     (401, None, "error", "provider_configuration"),
     (402, None, "error", "provider_budget_exhausted"),
     (402, "23", "error", "provider_rate_limited"),
-    (403, None, "error", "provider_configuration"),
+    (403, None, "error", "provider_forbidden"),
     (404, None, "error", "provider_model_unavailable"),
     (429, "37", "error", "provider_rate_limited"),
     (429, PRIVATE_VALUE, "error", "provider_rate_limited"),
@@ -70,6 +70,34 @@ async def test_provider_terminal_codes_and_retry_delays(status, retry_after, eve
     assert rows[-1]["code"] == code and rows[-1]["provider_calls"] == 1
     assert all(PRIVATE_VALUE not in value and TEST_TOKEN not in value and "private@example.test" not in value
                for value in [response.text, *raw_logs])
+
+
+@pytest.mark.parametrize("placement", ["top_level", "choice"])
+async def test_http_success_can_contain_a_provider_error(placement, diagnostic_records):
+    calls = []
+
+    def provider(request):
+        calls.append(request.url.path)
+        error = {"code": 429, "message": PRIVATE_VALUE}
+        choice = {"message": {"content": json.dumps({"status": "unrelated", "blocks": []})}}
+        data = {"choices": [choice]}
+        if placement == "choice":
+            choice["error"] = error
+        else:
+            data["error"] = error
+        return httpx.Response(200, headers={"Retry-After": "13"}, json=data)
+
+    response = await chat(application(provider))
+    responses = list(events(iter(response.text.splitlines())))
+    assert responses[-1][0] == "error"
+    assert responses[-1][1]["code"] == "provider_rate_limited"
+    assert responses[-1][1]["retry_after_seconds"] == 13
+    assert calls == ["/api/v1/chat/completions"]
+    raw_logs = [record.getMessage() for record in diagnostic_records.records]
+    rows = [json.loads(line) for line in raw_logs]
+    provider_log = next(row for row in rows if row["event"] == "chat_provider_call")
+    assert provider_log["http_status"] == 200 and provider_log["outcome"] == "provider_rate_limited"
+    assert all(PRIVATE_VALUE not in value for value in [response.text, *raw_logs])
 
 
 async def test_chat_stage_and_usage_logs_are_correlated_and_exclude_content(diagnostic_records):

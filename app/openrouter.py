@@ -60,8 +60,10 @@ def rejected(path: str, status: int, retry_after: str | None) -> ProviderError:
             return ProviderError("Сервис генерации временно ограничен. Попробуйте позже.", code="provider_rate_limited",
                                  retry_after_seconds=delay)
         return ProviderError("Сервис генерации временно недоступен. Попробуйте позже.", code="provider_budget_exhausted")
-    if status in {401, 403}:
+    if status == 401:
         return ProviderError("Сервис генерации временно недоступен. Попробуйте позже.", code="provider_configuration")
+    if status == 403:
+        return ProviderError("Сервис генерации отклонил запрос.", code="provider_forbidden")
     if status == 404 and path in MODEL_ENDPOINTS:
         return ProviderError("Выбранная модель временно недоступна.", code="provider_model_unavailable")
     if status == 429:
@@ -107,7 +109,11 @@ class OpenRouter:
                     if not isinstance(result, dict):
                         raise ValueError("invalid provider envelope")
                     usage = result.get("usage")
-                    if error := result.get("error"):
+                    error = result.get("error")
+                    choices = result.get("choices") if path == "chat/completions" else None
+                    if not error and isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                        error = choices[0].get("error")
+                    if error:
                         error_status = error.get("code") if isinstance(error, dict) else None
                         if type(error_status) is int and 400 <= error_status <= 599:
                             raise rejected(path, error_status, retry_after)
