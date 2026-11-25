@@ -32,6 +32,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></symbol>
+    <symbol id="i-feedback" viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 8h8m-8 4h5"/></symbol>
   </svg>
 
   <header class="topbar">
@@ -41,6 +42,7 @@
         <button class="nav-button nav-new" id="new-chat" type="button" aria-label="Новый диалог" title="Новый диалог" hidden><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Новый диалог</span></button>
         <button class="nav-button" id="open-history" type="button" aria-label="История диалогов" title="История диалогов"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg><span>История</span></button>
         <button class="nav-button nav-library" id="open-library" type="button" aria-label="База знаний" title="База знаний"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>База знаний</span></button>
+        <button class="nav-button" id="open-feedback" type="button" aria-label="Обратная связь" title="Обратная связь"><svg class="icon" aria-hidden="true"><use href="#i-feedback"/></svg><span>Обратная связь</span></button>
       </nav>
     </div>
   </header>
@@ -65,6 +67,18 @@
       <div class="turns" id="turns"></div>
     </section>
 
+    <section class="feedback-nudge" id="feedback-nudge" aria-label="Оценка Проектории" hidden>
+      <div><strong>Как вам Проектория?</strong><p>Помогите сделать ассистента лучше</p></div>
+      <div class="nudge-stars" aria-label="Выбрать оценку">
+        <button type="button" data-rating="1" aria-label="Оценить на 1 из 5">★</button>
+        <button type="button" data-rating="2" aria-label="Оценить на 2 из 5">★</button>
+        <button type="button" data-rating="3" aria-label="Оценить на 3 из 5">★</button>
+        <button type="button" data-rating="4" aria-label="Оценить на 4 из 5">★</button>
+        <button type="button" data-rating="5" aria-label="Оценить на 5 из 5">★</button>
+      </div>
+      <button class="text-button" id="feedback-nudge-open" type="button">Оставить отзыв</button>
+      <button class="icon-button" id="feedback-nudge-close" type="button" aria-label="Закрыть предложение оценки">×</button>
+    </section>
     <div class="dock" id="dock">
       <form class="composer" id="composer" aria-label="Отправить вопрос">
         <label class="sr-only" for="question">Вопрос о проекте</label>
@@ -111,5 +125,24 @@
     <div class="panel-body" id="panel-body"></div>
   </dialog>
   <div class="sr-only" id="announcement" role="status" aria-live="polite"></div>
+  <dialog class="panel feedback-panel" id="feedback-dialog" aria-labelledby="feedback-title">
+    <div class="panel-head"><h2 id="feedback-title" tabindex="-1">Как вам Проектория?</h2>
+      <button class="icon-button" id="feedback-close" type="button" aria-label="Закрыть форму отзыва">×</button></div>
+    <form class="panel-body feedback-form" id="feedback-form">
+      <p>Помогите нам сделать ассистента лучше</p>
+      <fieldset class="feedback-stars"><legend>Оценка от 1 до 5</legend>
+        <label><input type="radio" name="rating" value="1" required aria-label="1 из 5"><span aria-hidden="true">★</span></label>
+        <label><input type="radio" name="rating" value="2" required aria-label="2 из 5"><span aria-hidden="true">★</span></label>
+        <label><input type="radio" name="rating" value="3" required aria-label="3 из 5"><span aria-hidden="true">★</span></label>
+        <label><input type="radio" name="rating" value="4" required aria-label="4 из 5"><span aria-hidden="true">★</span></label>
+        <label><input type="radio" name="rating" value="5" required aria-label="5 из 5"><span aria-hidden="true">★</span></label>
+      </fieldset>
+      <label for="feedback-comment">Что понравилось или что стоит улучшить? <span class="panel-meta">Необязательно</span></label>
+      <textarea id="feedback-comment" rows="4" maxlength="1000" placeholder="Например, какие ответы были полезны…"></textarea>
+      <p class="panel-meta">Оценка и комментарий поступят команде в Telegram. История диалога не передаётся. Не указывайте личные данные и секреты.</p>
+      <button class="feedback-submit" id="feedback-send" type="submit">Отправить отзыв</button>
+      <p id="feedback-status" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
 </body>
 </html>

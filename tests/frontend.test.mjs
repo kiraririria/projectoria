@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
 const clientSource = readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8")
-  .replace(/^import[^\n]+\n/m, "");
+  .replace(/^import[^\n]+\n/gm, "");
 
 class Element {
   constructor(document, text = "") {
@@ -68,6 +68,7 @@ function browserStorage() {
 }
 
 function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
+  const feedbackAnswers = [];
   const nodes = new Map();
   const { values, localStorage, locks } = storage;
   const document = {
@@ -92,6 +93,7 @@ function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
     document, window, fetch, localStorage, AbortController, TextDecoder, TextEncoder,
     navigator: useLocks ? { locks } : {},
     renderMarkdown: (text) => new Element(document, text),
+    initFeedback: () => ({ answerCompleted(result) { feedbackAnswers.push(result); } }),
   });
   const get = (id) => document.getElementById(id);
   function send(message) {
@@ -108,7 +110,7 @@ function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
     assert.ok(entry, `Missing history entry: ${title}`);
     entry.children[0].dispatch("click");
   }
-  return { document, get, send, streamReply, values, openHistory, selectChat, excerptWithEvidence, window, dialogHistory };
+  return { document, get, send, streamReply, values, openHistory, selectChat, excerptWithEvidence, window, dialogHistory, feedbackAnswers };
 }
 
 const dialogCases = JSON.parse(readFileSync(new URL("./dialog_cases.json", import.meta.url), "utf8"));
@@ -178,6 +180,7 @@ test("stopping a request keeps the draft and focuses its recovery control", asyn
   tab.get("stop").dispatch("click");
   await pending;
   assert.equal(pendingSignal.aborted, true);
+  assert.equal(tab.feedbackAnswers.length, 0);
   assert.equal(tab.values.size, 0);
   assert.equal(tab.get("question").value, "Другой черновик");
   assert.equal(tab.get("announcement").textContent, "Получение ответа остановлено.");
@@ -201,6 +204,7 @@ test("unframed EOF and malformed final payloads cannot complete a chat", async (
     await tab.send("Вопрос");
     assert.equal(tab.values.size, 0);
     assert.notEqual(tab.get("announcement").textContent, "Ответ готов");
+    assert.equal(tab.feedbackAnswers.length, 0);
     assert.equal(tab.get("turns").children[0].children[1].children[1].textContent, "Повторить вопрос");
   }
 });

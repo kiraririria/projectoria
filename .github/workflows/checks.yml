@@ -27,4 +27,4 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - run: python scripts/build_index.py --check
-      - run: node --test tests/frontend.test.mjs
+      - run: node --test tests/frontend.test.mjs tests/feedback.test.mjs
