@@ -14,10 +14,18 @@ const panelTitle = byId("panel-title");
 const backButton = byId("panel-back");
 const announcement = byId("announcement");
 const storageKey = "proektoria.history.v1";
+const historyLocks = globalThis.navigator?.locks;
+const historyLimit = 20;
 const dateFormat = new Intl.DateTimeFormat("ru", { dateStyle: "medium", timeStyle: "short" });
+const replyStatuses = new Set(["answered", "partial", "project_details", "insufficient", "unrelated", "clarify", "unavailable"]);
+const retrievalModes = new Set(["none", "lexical", "hybrid"]);
+const incompleteReply = "Получен неполный ответ. Попробуйте ещё раз.";
 
-let conversations = readHistory();
-let conversation = { turns: [] };
+const localChats = new Map();
+const drafts = new Map();
+const failures = new Map();
+let newConversation = { turns: [] };
+let conversation = newConversation;
 let activeRequest;
 let failedTurn;
 let documents;
@@ -51,30 +59,101 @@ function button(className, label, action) {
   return control;
 }
 
-function readHistory() {
+function readStoredHistory() {
+  const serialized = localStorage.getItem(storageKey);
+  let stored;
   try {
-    const stored = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    return Array.isArray(stored) ? stored.filter((chat) =>
-      typeof chat?.id === "string" && typeof chat.title === "string" && Number.isFinite(chat.updated)
-      && Array.isArray(chat.turns) && chat.turns.every((turn) =>
-        typeof turn?.question === "string" && typeof turn.result?.answer === "string")) : [];
+    stored = JSON.parse(serialized ?? "[]");
   } catch {
     return [];
   }
+  if (!Array.isArray(stored)) return [];
+  const chats = new Map();
+  for (const chat of stored) {
+    if (typeof chat?.id !== "string" || !chat.id || typeof chat.title !== "string"
+      || !Number.isFinite(chat.updated) || !Array.isArray(chat.turns) || chats.has(chat.id)) continue;
+    const turns = chat.turns.filter((turn) => typeof turn?.question === "string" && turn.question.trim()
+      && typeof turn.result?.answer === "string" && turn.result.answer.trim() && turn.result.status !== "unavailable");
+    if (turns.length) chats.set(chat.id, { id: chat.id, title: chat.title, updated: chat.updated, turns, stored: true });
+  }
+  return [...chats.values()];
 }
 
-function saveTurn(question, result) {
-  conversation.id ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  conversation.title ??= question.replace(/\s+/g, " ").slice(0, 120);
-  conversation.updated = Date.now();
-  conversation.turns.push({ question, result });
-  conversations = [conversation, ...conversations.filter(({ id }) => id !== conversation.id)].slice(0, 20);
+function changeStoredHistory(change) {
+  return historyLocks.request(storageKey, () => {
+    const next = change(readStoredHistory());
+    if (!next) return false;
+    if (next.length) {
+      const data = next.map(({ id, title, updated, turns }) => ({ id, title, updated, turns }));
+      localStorage.setItem(storageKey, JSON.stringify(data));
+    } else {
+      localStorage.removeItem(storageKey);
+    }
+    return true;
+  });
+}
+
+function rememberLocalChat(chat) {
+  localChats.delete(chat.id);
+  localChats.set(chat.id, chat);
+  if (localChats.size > historyLimit) localChats.delete(localChats.keys().next().value);
+}
+
+async function saveTurn(question, result) {
+  const chat = conversation;
+  if (!chat.id) {
+    chat.id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    chat.title = question.replace(/\s+/g, " ").slice(0, 120);
+    newConversation = { turns: [] };
+    drafts.delete("");
+  }
+  chat.updated = Date.now();
+  const turn = { question, result };
+  chat.turns.push(turn);
+  chat.pending ??= [];
+  chat.pending.push(turn);
+  if (!historyLocks) {
+    rememberLocalChat(chat);
+    return;
+  }
   try {
-    localStorage.setItem(storageKey, JSON.stringify(conversations));
+    const saved = await changeStoredHistory((history) => {
+      const latest = history.find(({ id }) => id === chat.id);
+      if (chat.removed || (chat.stored && !latest)) return null;
+      const next = { ...chat, turns: [...(latest?.turns ?? []), ...chat.pending] };
+      return [next, ...history.filter(({ id }) => id !== chat.id)].slice(0, historyLimit);
+    });
     persisted = true;
+    localChats.delete(chat.id);
+    if (saved) {
+      chat.stored = true;
+      chat.pending = [];
+    } else {
+      forgetConversation(chat.id);
+    }
+  } catch {
+    persisted = false;
+    rememberLocalChat(chat);
+  }
+}
+
+function forgetConversation(id) {
+  localChats.delete(id);
+  drafts.delete(id);
+  failures.delete(id);
+  if (conversation.id === id) conversation.removed = true;
+}
+
+function readHistory() {
+  let stored = [];
+  try {
+    stored = readStoredHistory();
   } catch {
     persisted = false;
   }
+  return [...localChats.values(), ...stored.filter(({ id }) => !localChats.has(id))]
+    .sort((first, second) => second.updated - first.updated)
+    .slice(0, historyLimit);
 }
 
 function updateComposer() {
@@ -94,21 +173,36 @@ function showThread(visible) {
   workspace.classList.toggle("in-chat", visible);
 }
 
-function openConversation(chat) {
+function openConversation(chat = newConversation, closePanel = true) {
   if (activeRequest) return;
-  conversation = chat ?? { turns: [] };
+  if (!conversation.removed) drafts.set(conversation.id ?? "", input.value);
+  conversation = chat;
   failedTurn = undefined;
   turns.replaceChildren();
   for (const turn of conversation.turns) {
     const exchange = renderQuestion(turn.question);
     exchange.reply.append(renderAnswer(turn.result));
   }
-  input.value = "";
-  showThread(conversation.turns.length > 0);
+  const failure = failures.get(conversation.id ?? "");
+  if (failure) {
+    const exchange = renderQuestion(failure.question);
+    failedTurn = exchange.turn;
+    renderFailure(exchange, failure);
+  }
+  input.value = drafts.get(conversation.id ?? "") ?? "";
+  showThread(conversation.turns.length > 0 || Boolean(failure));
   updateComposer();
-  if (panel.open) panel.close();
-  window.scrollTo(0, conversation.turns.length ? document.documentElement.scrollHeight : 0);
-  input.focus({ preventScroll: true });
+  if (closePanel && panel.open) panel.close();
+  if (!panel.open) {
+    window.scrollTo(0, conversation.turns.length || failure ? document.documentElement.scrollHeight : 0);
+    input.focus({ preventScroll: true });
+  }
+}
+
+function resetRemovedConversation() {
+  if (!conversation.removed || activeRequest) return;
+  openConversation(newConversation, false);
+  announcement.textContent = "Диалог удалён из истории.";
 }
 
 function renderQuestion(question) {
@@ -156,7 +250,7 @@ function renderAnswer(result) {
   const meta = element("div", "reply-meta");
   if (result.retrieval?.mode === "hybrid") meta.append(element("span", "", "Гибридный поиск"));
   if (result.retrieval?.mode === "lexical") meta.append(element("span", "", "Лексический поиск"));
-  if (result.grounded === true && sources.length) meta.append(element("span", "", "Подтверждено источниками"));
+  if (result.grounded === true && sources.length) meta.append(element("span", "", "Цитаты сверены с базой"));
   if (result.status === "insufficient") meta.append(element("span", "", "В базе нет сведений"));
   const copy = button("text-button", "Копировать", async () => {
     try {
@@ -201,19 +295,24 @@ async function responseError(response) {
   if (response.status === 429) {
     const retryAfter = response.headers.get("Retry-After");
     const seconds = /^\d+$/.test(retryAfter ?? "") ? Number(retryAfter) : Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000);
-    let advice = "Попробуйте чуть позже.";
-    if (Number.isSafeInteger(seconds) && seconds > 0) {
-      const useMinutes = seconds >= 60;
-      const delay = new Intl.NumberFormat("ru", { style: "unit", unit: useMinutes ? "minute" : "second", unitDisplay: "long" })
-        .format(useMinutes ? Math.ceil(seconds / 60) : seconds);
-      advice = `Повторите запрос через ${delay}.`;
-    }
-    return new Error(`Сервис получает слишком много запросов. ${advice}`);
+    return new Error(`Сервис получает слишком много запросов. ${retryAdvice(seconds) || "Попробуйте чуть позже."}`);
   }
   const data = await response.json().catch(() => null);
   if (typeof data?.detail === "string") return new Error(data.detail);
   if (response.status === 413 || response.status === 422) return new Error("Проверьте длину вопроса и попробуйте снова.");
   return new Error("Сервис временно недоступен. Попробуйте ещё раз.");
+}
+
+function retryAdvice(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
+  const useMinutes = seconds >= 60;
+  const delay = new Intl.NumberFormat("ru", { style: "unit", unit: useMinutes ? "minute" : "second", unitDisplay: "long" })
+    .format(useMinutes ? Math.ceil(seconds / 60) : seconds);
+  return `Повторите запрос через ${delay}.`;
+}
+
+function chatFailure(message, seconds) {
+  return new Error([message, retryAdvice(seconds)].filter(Boolean).join(" "));
 }
 
 function parseEvent(frame) {
@@ -224,6 +323,58 @@ function parseEvent(frame) {
     if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
   }
   return event && data.length ? { event, payload: JSON.parse(data.join("\n")) } : null;
+}
+
+const followUp = /^\s*(?:а\s+)?(?:если|тогда|в таком случае|покажи пример|что насч[её]т|можешь уточнить|как (?:это|именно)|какие из них|кто за это|продолжи)(?![\p{L}\p{N}_])|^\s*а\s+(?:кто|когда|где|почему|зачем|сколько)(?![\p{L}\p{N}_])/iu;
+const reaction = /^(?:[\s.!?…]+|(?:что|ч[её]|шо)\s+(?:это\s+)?за\s+(?:х[у*]йн[яю]|фигн[яю]|ерунд[ау]|бред|дичь|хрень|хрен[ья])[\s.!?…]*|(?:не понял[аи]?|не понимаю|непонятно|что это такое|что это было)[\s.!?…]*)$/iu;
+const scrumConfirmation = /^да(?:\s*,?\s*(?:scrum|скрам))?[.!?…]*$/iu;
+const scrumSpelling = "Вы имели в виду Scrum?";
+
+const replyReference = /^\s*(?:а\s+)?(?:почему ты (?:сказал[аи]?|написал[аи]?|ответил[аи]?)|что ты (?:имел[аи]? в виду|подразумевал[аи]?)|в (?:тво[её]м|прошлом|предыдущем) (?:ответе|сообщении))(?![\p{L}\p{N}_])/iu;
+const continuesTopic = (question) => followUp.test(question) || replyReference.test(question);
+
+function historyExcerpt(text) {
+  return Array.from(text).slice(0, 700).join("").trimEnd();
+}
+
+function dialogHistory(question, turns) {
+  const latest = turns.at(-1);
+  if (!latest) return [];
+
+  if (scrumConfirmation.test(question) && latest.result.answer === scrumSpelling) {
+    return [
+      { role: "user", content: latest.question },
+      { role: "assistant", content: scrumSpelling },
+    ];
+  }
+
+  if (reaction.test(question)) return [{ role: "user", content: historyExcerpt(latest.question) }];
+  if (!continuesTopic(question)) return [];
+
+  const recent = [];
+  let anchor;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (reaction.test(turn.question)) continue;
+    if (!continuesTopic(turn.question)) {
+      anchor = turn;
+      break;
+    }
+    if (recent.length < 2) recent.unshift(turn);
+  }
+
+  const relevant = anchor ? [anchor, ...recent] : recent;
+  const history = relevant.map(({ question }) => {
+    const excerpt = historyExcerpt(question);
+    // A leading reaction or follow-up prefix can change classification when cut mid-word.
+    const content = reaction.test(excerpt) || continuesTopic(question) !== continuesTopic(excerpt) ? question : excerpt;
+    return { role: "user", content };
+  });
+  const previousReply = relevant.at(-1)?.result.answer;
+  if (replyReference.test(question) && previousReply?.trim()) {
+    history.push({ role: "assistant", content: historyExcerpt(previousReply.trim()) });
+  }
+  return history;
 }
 
 async function streamReply(message, history, signal, onStatus) {
@@ -240,23 +391,33 @@ async function streamReply(message, history, signal, onStatus) {
     signal,
   });
   if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new Error("Ответ не получен. Попробуйте ещё раз.");
+  const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+  if (!response.body || mediaType !== "text/event-stream") throw new Error(incompleteReply);
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   try {
     for (;;) {
       const { done, value } = await reader.read();
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       const frames = buffer.split(/\r?\n\r?\n/);
-      buffer = done ? "" : frames.pop();
+      buffer = frames.pop();
       for (const frame of frames) {
         const received = parseEvent(frame);
         if (!received) continue;
         const { event, payload } = received;
-        if (event === "status" && typeof payload.message === "string") onStatus(payload.message);
-        if (event === "error") throw new Error(payload.message || "Не удалось получить ответ. Попробуйте ещё раз.");
-        if (event === "final" && typeof payload.answer === "string") return payload;
+        if (event === "status" && typeof payload?.message === "string") onStatus(payload.message);
+        if (event === "error") {
+          const message = typeof payload?.message === "string" && payload.message.trim()
+            ? payload.message : "Не удалось получить ответ. Попробуйте ещё раз.";
+          throw chatFailure(message, payload?.retry_after_seconds);
+        }
+        if (event === "final") {
+          if (typeof payload?.answer !== "string" || !payload.answer.trim() || !replyStatuses.has(payload.status)
+            || !Array.isArray(payload.sources) || typeof payload.grounded !== "boolean"
+            || !retrievalModes.has(payload.retrieval?.mode)) throw new Error(incompleteReply);
+          return payload;
+        }
       }
       if (done) break;
     }
@@ -273,41 +434,75 @@ async function submitQuestion(event) {
   if (activeRequest || !question) return;
   failedTurn?.remove();
   failedTurn = undefined;
-  announcement.textContent = "";
+  failures.delete(conversation.id ?? "");
 
-  const history = conversation.turns.slice(-4).flatMap((entry) => [
-    { role: "user", content: entry.question },
-    { role: "assistant", content: Array.from(entry.result.answer).slice(0, 3000).join("") },
-  ]);
-  activeRequest = new AbortController();
+  const history = dialogHistory(question, conversation.turns);
   showThread(true);
-  const { turn, reply } = renderQuestion(question);
+  await requestReply(question, history, renderQuestion(question), true);
+}
+
+function renderFailure(exchange, failure) {
+  const { question, history, message, stopped, restoredDraft } = failure;
+  const retry = button("text-button", "Повторить вопрос", () => {
+    const clearRestoredDraft = restoredDraft && input.value === question;
+    return requestReply(question, history, exchange, clearRestoredDraft);
+  });
+  exchange.reply.replaceChildren(notice(message, !stopped), retry);
+  return retry;
+}
+
+async function requestReply(question, history, exchange, clearInput = false) {
+  if (activeRequest) return;
+  const { turn, reply } = exchange;
+  const chatKey = conversation.id ?? "";
+  const focused = document.activeElement;
+  const focusInput = focused === sendButton || reply.contains(focused);
+  const controller = new AbortController();
+  activeRequest = controller;
+  announcement.textContent = "";
   const pending = element("div", "pending");
   pending.setAttribute("role", "status");
   const status = element("span", "", "Ищу материалы по вопросу…");
   pending.append(element("span", "pending-indicator"), status);
-  reply.append(pending);
-  input.value = "";
+  reply.replaceChildren(pending);
+  if (clearInput) input.value = "";
   updateComposer();
+  if (focusInput && !panel.open) input.focus({ preventScroll: true });
   turn.scrollIntoView({ block: "nearest" });
 
+  let retry;
   try {
-    const result = await streamReply(question, history, activeRequest.signal, (message) => { status.textContent = message; });
+    const result = await streamReply(question, history, controller.signal, (message) => { status.textContent = message; });
+    controller.signal.throwIfAborted();
+    if (result.status === "unavailable") throw chatFailure(result.answer, result.retry_after_seconds);
+    const focusAfterReceive = document.activeElement === stopButton;
+    stopButton.disabled = true;
+    if (focusAfterReceive && !panel.open) input.focus({ preventScroll: true });
     reply.replaceChildren(renderAnswer(result));
-    saveTurn(question, result);
+    await saveTurn(question, result);
+    failures.delete(chatKey);
+    failedTurn = undefined;
     announcement.textContent = "Ответ готов";
   } catch (error) {
-    let message = error.message;
-    if (error.name === "AbortError") message = "Ответ остановлен. Вопрос сохранён в поле ввода.";
-    if (error instanceof TypeError || error instanceof SyntaxError) message = "Не удалось получить ответ. Проверьте соединение и попробуйте ещё раз.";
-    reply.replaceChildren(notice(message, error.name !== "AbortError"));
+    const stopped = controller.signal.aborted;
+    const restoredDraft = !input.value;
+    if (restoredDraft) input.value = question;
+    let message = stopped ? "Получение ответа остановлено." : error.message;
+    if (!stopped && (error instanceof TypeError || error instanceof SyntaxError)) {
+      message = "Не удалось получить ответ. Проверьте соединение и попробуйте ещё раз.";
+    }
+    const failure = { question, history, message, stopped, restoredDraft };
+    if (!conversation.removed) failures.set(chatKey, failure);
+    retry = renderFailure(exchange, failure);
+    if (stopped) announcement.textContent = message;
     failedTurn = turn;
-    if (!input.value.trim()) input.value = question;
   } finally {
     const returnFocus = document.activeElement === stopButton;
     activeRequest = undefined;
+    stopButton.disabled = false;
     updateComposer();
-    if (returnFocus && !panel.open) sendButton.focus({ preventScroll: true });
+    if (conversation.removed) resetRemovedConversation();
+    else if (returnFocus && !panel.open) (retry ?? input).focus();
     if (panel.open && panelView === "history") renderHistory(false);
   }
 }
@@ -346,20 +541,37 @@ async function fetchData(url) {
   return response.json();
 }
 
+function evidenceRanges(source) {
+  const { excerpt: text, evidence_spans: spans } = source;
+  const quotes = new Set(Array.isArray(source.evidence) ? source.evidence.filter((quote) =>
+    typeof quote === "string" && quote.trim() && quote.length <= text.length) : []);
+  if (Array.isArray(spans)) {
+    return spans.filter((range) => Number.isInteger(range?.start) && Number.isInteger(range.end)
+      && range.start >= 0 && range.end > range.start && range.end <= text.length
+      && quotes.has(text.slice(range.start, range.end)))
+      .map(({ start, end }) => [start, end]);
+  }
+
+  const ranges = [];
+  const wordCharacter = "[\\p{L}\\p{N}_]";
+  for (const quote of quotes) {
+    const trimmed = quote.trim();
+    const begin = /^[\p{L}\p{N}]/u.test(trimmed) ? `(?<!${wordCharacter})` : "";
+    const end = /[\p{L}\p{N}]$/u.test(trimmed) ? `(?!${wordCharacter})` : "";
+    const pattern = trimmed.split(/\s+/u)
+      .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[её]/giu, "[её]"))
+      .join("\\s+");
+    const match = new RegExp(`${begin}${pattern}${end}`, "iu").exec(text);
+    if (match) ranges.push([match.index, match.index + match[0].length]);
+  }
+  return ranges;
+}
+
 function excerptWithEvidence(source) {
   const excerpt = element("div", "excerpt");
   const text = source.excerpt;
-  const ranges = [];
-  for (const quote of Array.isArray(source.evidence) ? source.evidence : []) {
-    if (typeof quote !== "string" || !quote.trim()) continue;
-    const pattern = quote.trim().split(/\s+/u)
-      .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[её]/giu, "[её]"))
-      .join("\\s+");
-    const match = new RegExp(pattern, "iu").exec(text);
-    if (match) ranges.push([match.index, match.index + match[0].length]);
-  }
   const merged = [];
-  for (const range of ranges.sort((a, b) => a[0] - b[0])) {
+  for (const range of evidenceRanges(source).sort((a, b) => a[0] - b[0])) {
     const last = merged.at(-1);
     if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
     else merged.push(range);
@@ -381,7 +593,9 @@ async function openSource(source, fromLibrary = false) {
   if (typeof source.excerpt !== "string" || !source.excerpt) {
     panelBody.append(element("p", "panel-empty", "Загружаю фрагмент…"));
     try {
-      source = await fetchData(`/api/sources/${encodeURIComponent(source.id)}`);
+      const data = await fetchData(`/api/sources/${encodeURIComponent(source.id)}`);
+      if (typeof data?.excerpt !== "string" || typeof data.title !== "string") throw new Error("Invalid source response");
+      source = data;
     } catch {
       if (panelRevision !== revision) return;
       panelBody.replaceChildren(notice("Фрагмент сейчас недоступен.", true));
@@ -475,12 +689,31 @@ async function openLibrary(reset = true, selected = null) {
 
 function renderHistory(open = true) {
   if (open) preparePanel("history", "История диалогов");
-  const storage = element("p", "panel-meta", persisted ? "Диалоги хранятся в этом браузере." : "Браузер не сохранил последние изменения. Они доступны до закрытия страницы.");
+  const focused = document.activeElement?.dataset?.historyAction;
+  const conversations = readHistory();
+  let storageText = "Диалоги хранятся в этом браузере.";
+  if (!historyLocks) {
+    storageText = "Браузер не поддерживает совместную запись истории между вкладками. Новые ответы доступны до закрытия страницы.";
+  } else if (!persisted) {
+    storageText = "Браузер не сохранил последние изменения. Они доступны до закрытия страницы.";
+  }
+  const storage = element("p", "panel-meta", storageText);
+  const actions = element("div", "history-actions");
+  const controls = new Map();
+  const register = (control, action) => {
+    control.dataset.historyAction = action;
+    controls.set(action, control);
+    return control;
+  };
   const add = button("text-button", "Новый диалог", () => openConversation());
   add.prepend(icon("plus"));
   add.disabled = Boolean(activeRequest);
+  const clear = button("text-button history-remove", "Очистить историю", () => confirmHistoryRemoval());
+  clear.disabled = Boolean(activeRequest) || !conversations.length;
+  actions.append(register(add, "new"), register(clear, "clear"));
   const list = element("div", "panel-list");
   for (const chat of conversations) {
+    const entry = element("div", "history-entry");
     const row = button("history-row", chat.title, () => openConversation(chat));
     row.setAttribute("aria-label", chat.title);
     const updated = new Date(chat.updated);
@@ -491,10 +724,76 @@ function renderHistory(open = true) {
     }
     row.disabled = Boolean(activeRequest);
     if (chat.id === conversation.id) row.setAttribute("aria-current", "true");
-    list.append(row);
+    const remove = button("text-button history-remove", "Удалить", () => confirmHistoryRemoval(chat));
+    remove.setAttribute("aria-label", `Удалить диалог «${chat.title}»`);
+    remove.disabled = Boolean(activeRequest) || (!historyLocks && Boolean(chat.stored));
+    entry.append(register(row, `open-${chat.id}`), register(remove, `remove-${chat.id}`));
+    list.append(entry);
   }
   const hint = conversations.length ? list : element("p", "panel-empty", "Здесь появятся диалоги с полученными ответами.");
-  panelBody.replaceChildren(storage, add, hint);
+  panelBody.replaceChildren(storage, actions, hint);
+  if (!open && focused) {
+    const control = controls.get(focused);
+    (control && !control.disabled ? control : panelTitle).focus({ preventScroll: true });
+  }
+}
+
+function confirmHistoryRemoval(chat) {
+  const title = chat ? "Удалить диалог?" : "Очистить историю?";
+  const revision = preparePanel("history-remove", title);
+  const summary = element("p", "panel-meta", chat ? `Диалог «${chat.title}» будет удалён.` : "Все диалоги в истории браузера будут удалены.");
+  const actions = element("div", "history-actions");
+  const cancel = button("text-button", "Отмена", () => renderHistory());
+  const remove = button("text-button history-remove", chat ? "Удалить" : "Очистить", async () => {
+    remove.disabled = true;
+    cancel.disabled = true;
+    try {
+      if (historyLocks && (!chat || chat.stored)) {
+        await changeStoredHistory((stored) => chat ? stored.filter(({ id }) => id !== chat.id) : []);
+      } else if (!chat) {
+        localStorage.removeItem(storageKey);
+      }
+    } catch {
+      if (panelRevision === revision) {
+        panelBody.append(notice("Браузер не смог удалить историю. Попробуйте ещё раз.", true));
+        remove.disabled = false;
+        cancel.disabled = false;
+        remove.focus();
+      }
+      return;
+    }
+    if (chat) {
+      forgetConversation(chat.id);
+    } else {
+      const ids = new Set([...localChats.keys(), ...drafts.keys(), ...failures.keys(), conversation.id]);
+      for (const id of ids) if (id) forgetConversation(id);
+    }
+    resetRemovedConversation();
+    if (panelRevision === revision) renderHistory();
+  });
+  actions.append(cancel, remove);
+  panelBody.append(summary, actions);
+  cancel.focus();
+}
+
+function syncHistory(event) {
+  if (event.storageArea !== localStorage || (event.key !== storageKey && event.key !== null)) return;
+  let saved;
+  try {
+    saved = new Set(readStoredHistory().map(({ id }) => id));
+  } catch {
+    return;
+  }
+  for (const chat of localChats.values()) {
+    if (chat.stored && !saved.has(chat.id)) forgetConversation(chat.id);
+  }
+  for (const id of new Set([...drafts.keys(), ...failures.keys()])) {
+    if (id && !saved.has(id) && !localChats.has(id)) forgetConversation(id);
+  }
+  if (conversation.stored && !saved.has(conversation.id)) forgetConversation(conversation.id);
+  if (conversation.removed) activeRequest?.abort();
+  resetRemovedConversation();
+  if (panel.open && panelView === "history") renderHistory(false);
 }
 
 composer.addEventListener("submit", submitQuestion);
@@ -524,4 +823,5 @@ panel.addEventListener("close", () => {
 panel.addEventListener("click", (event) => {
   if (event.target === panel) panel.close();
 });
+window.addEventListener("storage", syncHistory);
 updateComposer();

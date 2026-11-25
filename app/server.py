@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from functools import lru_cache
+from time import monotonic
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -9,8 +12,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.requests import ClientDisconnect
+from starlette.types import Receive, Scope, Send
 
 from app.config import ROOT, Settings
+from app.diagnostics import ChatDiagnostics
 from app.knowledge import Knowledge, load_knowledge, load_vectors
 from app.openrouter import OpenRouter, ProviderError
 from app.pipeline import Pipeline
@@ -55,6 +60,34 @@ async def read_chat(request: Request) -> ChatRequest:
 
 def encode_event(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+class ChatStreamingResponse(StreamingResponse):
+    def __init__(self, events: AsyncGenerator[str, None], request_id: str):
+        super().__init__(events, media_type="text/event-stream", headers={
+            "X-Accel-Buffering": "no", "X-Request-ID": request_id,
+        })
+        self.events = events
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def deliver():
+            async with aclosing(self.events):
+                try:
+                    await self.stream_response(send)
+                except (OSError, ClientDisconnect):
+                    pass
+
+        # Monitor receive even on ASGI 2.4+, when the next send may be a long provider call away.
+        sender = asyncio.create_task(deliver())
+        listener = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait((sender, listener), return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            sender.cancel()
+            listener.cancel()
+            await asyncio.gather(sender, listener, return_exceptions=True)
 
 
 def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTransport | None = None,
@@ -107,34 +140,66 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
     async def chat(request: Request):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + MAX_REQUEST_SECONDS
-        require_chat_origin(request)
-        chat_request = await read_chat(request)
-        if not settings.api_key:
-            raise HTTPException(503, "Модель пока не подключена. Материалы доступны в базе знаний.")
+        diagnostics = ChatDiagnostics()
+        phase = "admission"
         try:
+            require_chat_origin(request)
+            phase = "read_request"
+            started = monotonic()
+            chat_request = await read_chat(request)
+            diagnostics.stage(phase, started, "ok")
+            phase = "configuration"
+            if not settings.api_key:
+                raise HTTPException(503, "Модель пока не подключена. Материалы доступны в базе знаний.")
+            phase = "knowledge"
+            started = monotonic()
             async with asyncio.timeout_at(deadline):
                 service = await asyncio.to_thread(pipeline)
+            diagnostics.stage(phase, started, "ok")
+        except HTTPException as exc:
+            code = {"configuration": "provider_configuration", "knowledge": "knowledge_unavailable"}.get(phase)
+            outcome = "error" if exc.status_code >= 500 else "rejected"
+            diagnostics.finish(outcome, stage=phase, http_status=exc.status_code, code=code)
+            raise
         except TimeoutError:
+            diagnostics.finish("error", stage=phase, http_status=503, code="deadline_exceeded")
             raise HTTPException(503, "База знаний загружается слишком долго. Попробуйте ещё раз.") from None
 
         async def stream():
+            outcome, fields = "cancelled", {}
             try:
-                async with asyncio.timeout_at(deadline):
-                    router = OpenRouter(settings, transport)
+                try:
+                    router = OpenRouter(settings, transport, diagnostics=diagnostics)
                     async with router.http:
-                        async for name, data in service.events(chat_request, router, deadline):
-                            yield encode_event(name, data)
-            except ProviderError as exc:
-                yield encode_event("error", {"message": str(exc)})
-            except TimeoutError:
-                yield encode_event("error", {"message": "Не удалось ответить вовремя. Попробуйте уточнить вопрос."})
-            except Exception as exc:
-                logger.error("Chat failed (%s)", type(exc).__name__)
-                yield encode_event("error", {"message": "Не удалось подготовить ответ. Попробуйте ещё раз."})
+                        async with aclosing(service.events(chat_request, router, deadline)) as events:
+                            while True:
+                                if loop.time() >= deadline:
+                                    raise TimeoutError
+                                async with asyncio.timeout_at(deadline):
+                                    item = await anext(events, None)
+                                if item is None:
+                                    raise RuntimeError("Chat stream ended without a terminal event")
+                                name, data = item
+                                if name in {"final", "error"}:
+                                    break
+                                yield encode_event(name, data)
+                except ProviderError as exc:
+                    name, data = "error", {"message": str(exc), **exc.fields()}
+                except TimeoutError:
+                    name, data = "error", {"code": "deadline_exceeded",
+                                          "message": "Не удалось ответить вовремя. Попробуйте уточнить вопрос."}
+                except Exception as exc:
+                    logger.error("Chat failed (%s)", type(exc).__name__)
+                    name, data = "error", {"code": "internal_error",
+                                          "message": "Не удалось подготовить ответ. Попробуйте ещё раз."}
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={
-            "X-Accel-Buffering": "no",
-        })
+                yield encode_event(name, data)
+                outcome = data["status"] if name == "final" else "error"
+                fields = {"code": data.get("code"), "mode": data.get("retrieval", {}).get("mode")}
+            finally:
+                diagnostics.finish(outcome, http_status=200, **fields)
+
+        return ChatStreamingResponse(stream(), diagnostics.request_id)
 
     @application.get("/", include_in_schema=False)
     def index():

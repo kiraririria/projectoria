@@ -46,9 +46,10 @@
     "publisher": "Ken Schwaber, Jeff Sutherland",
     "version": "Ноябрь 2020",
     "url": "https://scrumguides.org/scrum-guide.html",
-    "description": "Ответственности команды, события, артефакты и обязательства Scrum.",
+    "description": "Определение Scrum, ответственности команды, события, артефакты и обязательства.",
     "file": "scrum.md",
     "section_urls": {
+      "definition": "https://scrumguides.org/scrum-guide.html#scrum-definition",
       "team": "https://scrumguides.org/scrum-guide.html#scrum-team",
       "product-backlog": "https://scrumguides.org/scrum-guide.html#product-backlog",
       "sprint": "https://scrumguides.org/scrum-guide.html#the-sprint",

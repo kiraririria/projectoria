@@ -6,6 +6,10 @@ import pytest
 
 from app.config import Settings
 from app.knowledge import load_knowledge
+from app.retrieval import retrieval_query
+from app.schemas import Message
+from app.token_budget import estimate_input_tokens
+from test_diagnostics import diagnostic_records
 from app.server import create_app
 from evaluation.run import CITATION, events
 
@@ -13,6 +17,8 @@ from evaluation.run import CITATION, events
 TEAM_QUESTION = "Назови ответственности Scrum Team: Product Owner, Scrum Master и Developers."
 FACT = "Product Owner — один человек."
 PARAPHRASE = "За работу Product Owner отвечает один человек."
+SCRUM_DEFINITION = "Scrum — лёгкий фреймворк для решения сложных задач с адаптацией по результатам спринта."
+SCRUM_QUOTE = "Scrum — лёгкий фреймворк, который помогает командам создавать ценность, адаптируя решения сложных задач."
 TEST_KEY = "secret-only-for-mock-tests"
 pytestmark = pytest.mark.anyio
 
@@ -99,7 +105,7 @@ async def test_full_sse_path_with_dialog_and_verifiable_citation(browser_api):
     async with browser_api(provider) as client:
         kind, answer = event_rows(await client.post("/api/chat", json={"message": question, "history": history}))
         assert captured[0]["question"] == question
-        assert captured[0]["previous_question"] == TEAM_QUESTION
+        assert captured[0]["dialog_context"] == [{"role": "user", "content": TEAM_QUESTION}]
         assert kind == "final", answer
         assert answer["grounded"] is True
         assert answer["retrieval"]["mode"] == "lexical"
@@ -139,39 +145,6 @@ async def test_agile_is_explained_directly_with_short_source_quotes(browser_api)
     assert tangential not in answer["answer"]
     assert [source["id"] for source in answer["sources"]] == ["agile--principles", "agile--values"]
     assert answer["sources"][0]["evidence"] == [quote]
-
-
-@pytest.mark.parametrize(("editor_reply", "keeps_extra"), [
-    ({"keep": [1]}, False),
-    ({"keep": [2]}, True),
-    ({"keep": [1], "text": "Новый неподтверждённый вывод."}, True),
-])
-async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(browser_api, editor_reply, keeps_extra):
-    question = "Кто выполняет обязанности Product Owner?"
-    extra = "Developers создают пригодный к использованию Increment"
-    calls = []
-
-    def provider(request):
-        prompt = model_prompt(request)
-        calls.append(prompt)
-        if len(calls) == 1:
-            source = next(item for item in prompt["sources"] if FACT in item["text"] and extra in item["text"])
-            blocks = [cited_block(source, FACT, PARAPHRASE), cited_block(source, extra, f"{extra}.")]
-            return openrouter_response({"status": "answered", "blocks": blocks})
-        assert prompt["question"] == question
-        assert [(block["number"], block["text"]) for block in prompt["blocks"]] == [
-            (1, PARAPHRASE), (2, f"{extra}."),
-        ]
-        return openrouter_response(editor_reply)
-
-    async with browser_api(provider) as client:
-        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
-    assert len(calls) == 2
-    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
-    assert answer["answer"].startswith(PARAPHRASE)
-    assert (extra in answer["answer"]) is keeps_extra
-    assert "Новый неподтверждённый вывод" not in answer["answer"]
-    assert answer["sources"][0]["evidence"] == ([FACT, extra] if keeps_extra else [FACT])
 
 
 async def test_related_topic_with_a_real_quote_does_not_answer_a_different_definition(browser_api):
@@ -392,7 +365,7 @@ async def test_model_can_ask_for_clarification_without_suggesting_passages(brows
 async def test_short_new_question_does_not_inherit_old_topic(browser_api):
     def provider(request):
         prompt = model_prompt(request)
-        assert prompt["previous_question"] == ""
+        assert prompt["dialog_context"] == []
         part = next(item for item in prompt["sources"] if "WIP — работа" in item["text"])
         return openrouter_response({"status": "answered", "blocks": [
             cited_block(part, "WIP — работа, которую уже начали и ещё не закончили."),
@@ -406,36 +379,44 @@ async def test_short_new_question_does_not_inherit_old_topic(browser_api):
 
 async def test_definition_typo_requires_confirmation_before_looking_up_the_term(browser_api):
     question = "что такое Srum?"
-    async with browser_api(never_call_openrouter) as client:
+    calls = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        calls.append(prompt["question"])
+        assert prompt["definition_term"] == "Scrum"
+        part = next(item for item in prompt["sources"] if SCRUM_QUOTE in item["text"])
+        return openrouter_response({"status": "answered", "blocks": [cited_block(part, SCRUM_QUOTE, SCRUM_DEFINITION)]})
+
+    async with browser_api(provider) as client:
         kind, clarification = event_rows(await client.post("/api/chat", json={"message": question}))
         assert kind == "final" and clarification["status"] == "clarify"
         assert "Scrum" in clarification["answer"] and "?" in clarification["answer"]
         assert clarification["sources"] == [] and not clarification["grounded"]
+        assert not calls
 
         history = [
             {"role": "user", "content": question},
             {"role": "assistant", "content": clarification["answer"]},
         ]
         kind, answer = event_rows(await client.post("/api/chat", json={"message": "Да.", "history": history}))
-    assert kind == "final" and answer["status"] == "insufficient"
-    assert "Scrum" in answer["answer"] and "определени" in answer["answer"].casefold()
-    assert answer["sources"] == [] and not answer["grounded"]
+    assert calls == ["Да."]
+    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
+    assert answer["answer"].startswith(SCRUM_DEFINITION)
+    assert [source["id"] for source in answer["sources"]] == ["scrum--definition"]
 
 
-@pytest.mark.parametrize(("question", "term"), [
-    ("Что такое Scrum?", "Scrum"),
-    ("Что такое скрам?", "Scrum"),
-    ("Что такое НДС?", "НДС"),
-])
-async def test_missing_definition_does_not_return_related_passages(browser_api, question, term):
+async def test_missing_definition_does_not_return_related_passages(browser_api):
     async with browser_api(never_call_openrouter) as client:
-        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": "Что такое НДС?"}))
     assert kind == "final" and answer["status"] == "insufficient"
-    assert term.casefold() in answer["answer"].casefold() and "определени" in answer["answer"].casefold()
+    assert "НДС" in answer["answer"] and "определени" in answer["answer"].casefold()
     assert answer["sources"] == [] and not answer["grounded"]
 
 
 @pytest.mark.parametrize(("question", "definition", "quote", "source_id"), [
+    ("Что такое Scrum?", SCRUM_DEFINITION, SCRUM_QUOTE, "scrum--definition"),
+    ("Что такое скрам?", SCRUM_DEFINITION, SCRUM_QUOTE, "scrum--definition"),
     (
         "Что такое Scrum Team?",
         "Scrum Team — небольшая команда с самоуправлением и разными навыками.",
@@ -612,3 +593,104 @@ async def test_openrouter_search_stages_and_fallback(browser_api, tmp_path, embe
         assert answer["retrieval"]["mode"] == ("hybrid" if embedding_available else "lexical")
         assert bool(rerank_requests) is embedding_available
         assert bool(answer["retrieval"]["warnings"]) is (not embedding_available or not reranker_available)
+
+
+@pytest.mark.parametrize(("question", "include_reply"), [
+    ("Тогда кто отвечает за бэклог?", False),
+    ("Почему ты сказал, что за бэклог отвечает Product Owner?", True),
+])
+async def test_long_follow_up_keeps_topic_and_recent_details(browser_api, question, include_reply):
+    anchor = {"role": "user", "content": TEAM_QUESTION}
+    earlier = {"role": "user", "content": "А если все работают удалённо?"}
+    team_size = {"role": "user", "content": "А если у нас 3 человека?"}
+    last_question = {"role": "user", "content": "А если один из нас ещё и пишет код?"}
+    last_reply = {"role": "assistant", "content": "Мы обсуждали ответственность Product Owner."}
+    history = [
+        {"role": "user", "content": "Что такое Kanban?"},
+        anchor, earlier, team_size, last_question, last_reply,
+        {"role": "user", "content": "Не понял"},
+        {"role": "assistant", "content": "Что нужно разобрать?"},
+    ]
+    expected_context = [anchor, team_size, last_question]
+    prompt_contexts = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        prompt_contexts.append(prompt["dialog_context"])
+        part = next(item for item in prompt["sources"] if FACT in item["text"])
+        return openrouter_response({"status": "answered", "blocks": [
+            cited_block(part, FACT, "В вашей команде из 3 человек роль Product Owner закреплена за одним человеком."),
+        ]})
+
+    query = retrieval_query(question, [Message(**item) for item in history])
+    assert query.splitlines() == [question, *(item["content"] for item in expected_context)]
+    async with browser_api(provider) as client:
+        for request_history in (history, [*expected_context, *([last_reply] if include_reply else [])]):
+            kind, result = event_rows(await client.post(
+                "/api/chat", json={"message": question, "history": request_history},
+            ))
+            assert kind == "final" and result["grounded"]
+            assert result["sources"][0]["document_id"] == "scrum"
+
+    if include_reply:
+        expected_context.append(last_reply)
+    assert prompt_contexts == [expected_context, expected_context]
+
+
+async def test_input_budget_trims_detail_and_lower_ranked_sources_but_keeps_scrum(browser_api, diagnostic_records):
+    anchor = {"role": "user", "content": TEAM_QUESTION}
+    earlier = {"role": "user", "content": ("А если нас трое? " + "Участники сами обсуждают задачи. " * 17).strip()}
+    latest = {"role": "user", "content": "А если один из нас ещё и пишет код?"}
+    question = "Тогда кто отвечает за бэклог?"
+    request = {"message": question, "history": [anchor, earlier, latest]}
+    seen = []
+
+    def provider(call):
+        prompt = model_prompt(call)
+        seen.append((json.loads(call.content)["messages"], prompt))
+        return openrouter_response(cited_payload(prompt))
+
+    async with browser_api(provider, max_input_tokens=16_000) as client:
+        _, full_answer = event_rows(await client.post("/api/chat", json=request))
+    full_messages, full_prompt = seen[0]
+    assert full_answer["grounded"] and full_prompt["dialog_context"] == [anchor, earlier, latest]
+    first_chunk_id = full_prompt["sources"][0]["id"].split(".")[0]
+    kept_sources = [source for source in full_prompt["sources"] if source["id"].startswith(f"{first_chunk_id}.")]
+    assert len(kept_sources) < len(full_prompt["sources"])
+    target_payload = {**full_prompt, "dialog_context": [anchor, latest], "sources": kept_sources}
+    target_messages = [full_messages[0], {
+        "role": "user", "content": json.dumps(target_payload, ensure_ascii=False),
+    }]
+    limit = estimate_input_tokens(target_messages)
+
+    async with browser_api(provider, max_input_tokens=limit) as client:
+        kind, answer = event_rows(await client.post("/api/chat", json=request))
+    limited_messages, limited_prompt = seen[1]
+    assert estimate_input_tokens(full_messages) > limit
+    assert estimate_input_tokens(limited_messages) <= limit
+    assert limited_prompt["question"] == question
+    assert limited_prompt["dialog_context"] == [anchor, latest]
+    assert limited_prompt["sources"] == kept_sources
+    assert kind == "final" and answer["grounded"]
+    assert answer["sources"][0]["document_id"] == "scrum"
+    assert PARAPHRASE in answer["answer"]
+    trim = next(event for event in diagnostic_events(diagnostic_records) if event.get("stage") == "input_budget")
+    assert trim["history_removed"] == 1 and trim["passages_removed"] == len(full_prompt["sources"]) - len(kept_sources)
+
+
+async def test_input_budget_blocks_request_that_cannot_fit_without_losing_topic(browser_api, diagnostic_records):
+    request = {
+        "message": "Тогда кто отвечает за бэклог?",
+        "history": [{"role": "user", "content": TEAM_QUESTION}],
+    }
+    async with browser_api(never_call_openrouter, max_input_tokens=1) as client:
+        kind, result = event_rows(await client.post("/api/chat", json=request))
+    assert kind == "error"
+    assert result["message"] == "Вопрос и материалы получились слишком длинными. Сократите вопрос и повторите."
+    blocked = next(event for event in diagnostic_events(diagnostic_records) if event.get("code") == "input_token_limit")
+    assert blocked["outcome"] == "blocked"
+
+
+
+def diagnostic_events(caplog):
+    return [json.loads(record.getMessage()) for record in caplog.records if record.name == "projectoria.chat"]

@@ -1,0 +1,70 @@
+[
+  {
+    "id": "anchor-and-two-recent",
+    "message": "Тогда кто отвечает за бэклог?",
+    "turns": [
+      ["Что такое Kanban?", "Старая тема."],
+      ["Как распределены обязанности в Scrum?", "Исходная тема."],
+      ["А если все работают удалённо?", "Старое уточнение."],
+      ["А если нас трое?", "Размер команды."],
+      ["А если один ещё и пишет код?", "Последний ответ."],
+      ["Не понял", "Уточните вопрос."]
+    ],
+    "expected": [
+      {"role": "user", "content": "Как распределены обязанности в Scrum?"},
+      {"role": "user", "content": "А если нас трое?"},
+      {"role": "user", "content": "А если один ещё и пишет код?"}
+    ]
+  },
+  {
+    "id": "short-who",
+    "message": "А кто выбирает формат?",
+    "turns": [["Для чего проводят Daily Scrum?", "Для адаптации плана."]],
+    "expected": [{"role": "user", "content": "Для чего проводят Daily Scrum?"}]
+  },
+  {
+    "id": "short-when",
+    "message": "А когда это делать?",
+    "turns": [["Как проверять результат спринта?", "На Sprint Review."]],
+    "expected": [{"role": "user", "content": "Как проверять результат спринта?"}]
+  },
+  {
+    "id": "reply-reference",
+    "message": "Почему ты написал, что это обязанность Product Owner?",
+    "turns": [["Кто упорядочивает бэклог?", "За порядок отвечает Product Owner."]],
+    "expected": [
+      {"role": "user", "content": "Кто упорядочивает бэклог?"},
+      {"role": "assistant", "content": "За порядок отвечает Product Owner."}
+    ]
+  },
+  {
+    "id": "new-definition",
+    "message": "А что такое WIP?",
+    "turns": [["Для чего проводят Daily Scrum?", "Старая тема."]],
+    "expected": []
+  },
+  {
+    "id": "explicit-reset",
+    "message": "Теперь о Git: как создать ветку?",
+    "turns": [["Для чего проводят Daily Scrum?", "Старая тема."]],
+    "expected": []
+  },
+  {
+    "id": "reset-inside-history",
+    "message": "А кто выбирает формат?",
+    "turns": [
+      ["Для чего проводят Daily Scrum?", "Старая тема."],
+      ["Что такое Kanban?", "Новая тема."]
+    ],
+    "expected": [{"role": "user", "content": "Что такое Kanban?"}]
+  },
+  {
+    "id": "confirmation",
+    "message": "Да.",
+    "turns": [["Что такое Srum?", "Вы имели в виду Scrum?"]],
+    "expected": [
+      {"role": "user", "content": "Что такое Srum?"},
+      {"role": "assistant", "content": "Вы имели в виду Scrum?"}
+    ]
+  }
+]

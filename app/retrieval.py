@@ -32,7 +32,14 @@ ALIASES = (
 )
 FOLLOW_UP = re.compile(
     r"^\s*(?:а\s+)?(?:если\b|тогда\b|в таком случае\b|покажи пример\b|что насч[её]т\b|"
-    r"можешь уточнить\b|как (?:это|именно)\b|какие из них\b|кто за это\b|продолжи\b)",
+    r"можешь уточнить\b|как (?:это|именно)\b|какие из них\b|кто за это\b|продолжи\b)|"
+    r"^\s*а\s+(?:кто|когда|где|почему|зачем|сколько)\b",
+    re.I,
+)
+REPLY_REFERENCE = re.compile(
+    r"^\s*(?:а\s+)?(?:почему ты (?:сказал[аи]?|написал[аи]?|ответил[аи]?)|"
+    r"что ты (?:имел[аи]? в виду|подразумевал[аи]?)|"
+    r"в (?:тво[её]м|прошлом|предыдущем) (?:ответе|сообщении))\b",
     re.I,
 )
 REACTION = re.compile(
@@ -65,16 +72,45 @@ def expansions(text: str) -> list[str]:
     return tokens(" ".join(extra for pattern, extra in ALIASES if re.search(pattern, text, re.I)))
 
 
+def continues_topic(message: str) -> bool:
+    return bool(FOLLOW_UP.search(message) or REPLY_REFERENCE.search(message))
+
+
+def dialog_context(message: str, history: list[Message] | tuple[Message, ...]) -> list[dict[str, str]]:
+    if REACTION.fullmatch(message) or not continues_topic(message):
+        return []
+
+    recent = []
+    anchor = None
+    reply = None
+    for index in range(len(history) - 1, -1, -1):
+        turn = history[index]
+        if turn.role != "user" or REACTION.fullmatch(turn.content):
+            continue
+        if reply is None:
+            next_turn = history[index + 1] if index + 1 < len(history) else None
+            reply = next_turn.content[:700] if next_turn and next_turn.role == "assistant" else ""
+        if not continues_topic(turn.content):
+            anchor = turn
+            break
+        if len(recent) < 2:
+            recent.append(turn)
+
+    if anchor:
+        recent.append(anchor)
+    context = [{"role": turn.role, "content": turn.content[:700]} for turn in reversed(recent)]
+    if reply and REPLY_REFERENCE.search(message):
+        context.append({"role": "assistant", "content": reply})
+    return context
+
+
 def previous_question(message: str, history: list[Message] | tuple[Message, ...]) -> str:
-    if FOLLOW_UP.search(message) and not REACTION.fullmatch(message):
-        return next((msg.content[:700] for msg in reversed(history)
-                     if msg.role == "user" and not REACTION.fullmatch(msg.content)), "")
-    return ""
+    return "\n".join(turn["content"] for turn in dialog_context(message, history) if turn["role"] == "user")
 
 
 def retrieval_query(message: str, history: list[Message] | tuple[Message, ...] = ()) -> str:
-    previous = previous_question(message, history)
-    return f"{message[:2200]}\n{previous}" if previous else message[:2200]
+    questions = [turn["content"] for turn in dialog_context(message, history) if turn["role"] == "user"]
+    return "\n".join([message[:2200], *questions])
 
 
 def institutional_request(message: str, history: list[Message] | tuple[Message, ...]) -> bool:
@@ -102,11 +138,13 @@ class Retriever:
 
     def rank(self, message: str, history=(), *, wide=False, vector=None, extra="") -> list[Chunk]:
         query = {term: 1.0 for term in tokens(message)}
-        previous = previous_question(message, history)
-        for text, weight in ((previous, 0.7), (extra, 0.6)):
+        questions = [turn["content"] for turn in dialog_context(message, history) if turn["role"] == "user"]
+        for text in questions:
             for term in tokens(text):
-                query[term] = max(query.get(term, 0), weight)
-        for term in expansions(f"{message} {previous} {extra}"):
+                query.setdefault(term, 0.7)
+        for term in tokens(extra):
+            query[term] = max(query.get(term, 0), 0.6)
+        for term in expansions(" ".join([message, *questions, extra])):
             query.setdefault(term, 0.45)
 
         lexical: dict[str, float] = defaultdict(float)
