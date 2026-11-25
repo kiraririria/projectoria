@@ -1,13 +1,15 @@
 import asyncio
 import json
-import logging
+import re
+from time import perf_counter
 
 import httpx
 
 from app.config import OPENROUTER_URL, Settings
+from app.diagnostics import ChatDiagnostics
 from app.knowledge import unit_vector
 
-logger = logging.getLogger(__name__)
+MODEL_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}")
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 PROVIDER_PRIVACY = {"data_collection": "deny"}
 TRANSIENT_STATUS = {408, 500, 502, 503, 504, 520, 522, 524, 529}
@@ -21,13 +23,21 @@ class TemporaryProviderError(ProviderError):
     pass
 
 
+class ProviderTimeout(TemporaryProviderError):
+    pass
+
+
 class InvalidCompletion(ProviderError):
     pass
 
 
 class OpenRouter:
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(
+        self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None,
+        *, diagnostics: ChatDiagnostics | None = None,
+    ):
         self.settings = settings
+        self.diagnostics = diagnostics or ChatDiagnostics()
         self.http = httpx.AsyncClient(
             base_url=OPENROUTER_URL,
             headers={"Authorization": f"Bearer {settings.api_key}", "X-Title": "Proektoriya",
@@ -37,6 +47,9 @@ class OpenRouter:
         )
 
     async def post(self, path: str, payload: dict, timeout: float) -> dict:
+        started = perf_counter()
+        stage = {"embeddings": "embedding", "rerank": "rerank", "chat/completions": "generation"}[path]
+        requested_model = payload.get("model")
         try:
             async with asyncio.timeout(timeout):
                 limits = httpx.Timeout(timeout, connect=min(4.0, timeout))
@@ -50,10 +63,16 @@ class OpenRouter:
                 result = json.loads(body)
                 if not isinstance(result, dict) or result.get("error"):
                     raise ValueError("invalid provider envelope")
+                actual_model = result.get("model")
+                if not (isinstance(actual_model, str) and MODEL_ID.fullmatch(actual_model)
+                        and not actual_model.lower().startswith("sk-")):
+                    actual_model = None
+                self.diagnostics.record(stage, started, model=actual_model, requested_model=requested_model)
                 return result
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            logger.info("OpenRouter %s returned HTTP %s", path, status)
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_http", requested_model=requested_model,
+                                    http_status=status)
             if status in {401, 402, 403}:
                 raise ProviderError("Сервис генерации временно недоступен. Попробуйте позже.") from None
             if status == 429:
@@ -62,11 +81,14 @@ class OpenRouter:
                 raise TemporaryProviderError("OpenRouter временно недоступен.") from None
             raise ProviderError("OpenRouter не смог обработать запрос. Попробуйте позже.") from None
         except (httpx.TimeoutException, TimeoutError):
-            raise TemporaryProviderError("OpenRouter отвечает слишком долго.") from None
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_timeout", requested_model=requested_model)
+            raise ProviderTimeout("Модель отвечает слишком долго. Повторите ещё раз.") from None
         except httpx.TransportError:
-            raise TemporaryProviderError("Не удалось связаться с OpenRouter.") from None
+            self.diagnostics.record(stage, started, outcome="failed", reason="provider_connection", requested_model=requested_model)
+            raise TemporaryProviderError("Сервис временно недоступен. Попробуйте ещё раз.") from None
         except (httpx.HTTPError, ValueError, RecursionError):
-            raise ProviderError("Не удалось получить ответ от OpenRouter. Попробуйте позже.") from None
+            self.diagnostics.record(stage, started, outcome="failed", reason="invalid_provider_response", requested_model=requested_model)
+            raise ProviderError("Сервис временно недоступен. Попробуйте ещё раз.") from None
 
     async def embed(self, texts: list[str], *, timeout: float = 3.5) -> list[tuple[float, ...]]:
         data = await self.post("embeddings", {

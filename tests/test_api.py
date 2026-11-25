@@ -243,7 +243,11 @@ async def test_verification_rejects_unknown_or_malformed_passage_ids(browser_api
         assert result["status"] == "unavailable" and not result["grounded"]
 
 
-async def test_model_failure_has_readable_error_without_secrets(browser_api):
+def diagnostic_events(caplog):
+    return [json.loads(record.getMessage()) for record in caplog.records if record.name == "app.diagnostics"]
+
+
+async def test_model_failure_has_readable_error_without_secrets(browser_api, caplog):
     def provider(request):
         model_prompt(request)
         return httpx.Response(401, json={"error": {"message": f"private: {TEST_KEY}"}})
@@ -254,8 +258,14 @@ async def test_model_failure_has_readable_error_without_secrets(browser_api):
         assert result["message"].strip()
         assert TEST_KEY not in str(result)
 
+    events = diagnostic_events(caplog)
+    provider_event = next(event for event in events if event.get("reason") == "provider_http")
+    assert provider_event["http_status"] == 401
+    assert provider_event["stage"] == "generation"
+    assert TEST_KEY not in caplog.text and TEAM_QUESTION not in caplog.text
 
-async def test_fabricated_quote_is_repaired_with_feedback(browser_api):
+
+async def test_fabricated_quote_is_repaired_with_feedback(browser_api, caplog):
     calls = []
 
     def provider(request):
@@ -274,6 +284,12 @@ async def test_fabricated_quote_is_repaired_with_feedback(browser_api):
         assert kind == "final", result
         assert result["grounded"] is True
         assert PARAPHRASE in result["answer"]
+
+    events = diagnostic_events(caplog)
+    rejected = next(event for event in events if event.get("reason") == "unverified_answer")
+    assert rejected["stage"] == "verification"
+    assert rejected["request_id"] not in str(result)
+    assert len({event["request_id"] for event in events}) == 1
 
 
 async def test_partial_answer_survives_failed_follow_up_generation(browser_api):
@@ -317,7 +333,7 @@ async def test_deepseek_is_default_and_answer_retries_once_on_timeout(browser_ap
     assert PARAPHRASE in result["answer"]
 
 
-async def test_repeated_provider_timeouts_do_not_present_related_material_as_an_answer(browser_api):
+async def test_repeated_provider_timeouts_do_not_present_related_material_as_an_answer(browser_api, caplog):
     calls = []
 
     def provider(request):
@@ -329,8 +345,16 @@ async def test_repeated_provider_timeouts_do_not_present_related_material_as_an_
         kind, result = event_rows(await client.post("/api/chat", json={"message": TEAM_QUESTION}))
     assert len(calls) == 2
     assert kind == "final" and result["status"] == "unavailable" and not result["grounded"]
-    assert result["answer"]
+    assert result["answer"] == "Модель отвечает слишком долго. Повторите ещё раз."
     assert result["sources"] == []
+
+    events = diagnostic_events(caplog)
+    timeouts = [event for event in events if event.get("reason") == "provider_timeout"]
+    assert len(timeouts) == 2
+    assert all(event["stage"] == "generation" and event["duration_ms"] >= 0 for event in timeouts)
+    assert len({event["request_id"] for event in events}) == 1
+    assert timeouts[0]["request_id"] not in str(result)
+    assert TEAM_QUESTION not in caplog.text
 
 
 @pytest.mark.parametrize("message", ["че за хуйня", "Не понял.", "???"])

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from functools import lru_cache
+from time import perf_counter
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 from starlette.requests import ClientDisconnect
 
 from app.config import ROOT, Settings
+from app.diagnostics import ChatDiagnostics
 from app.knowledge import Knowledge, load_knowledge, load_vectors
 from app.openrouter import OpenRouter, ProviderError
 from app.pipeline import Pipeline
@@ -109,27 +111,38 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         deadline = loop.time() + MAX_REQUEST_SECONDS
         require_chat_origin(request)
         chat_request = await read_chat(request)
+        diagnostics = ChatDiagnostics()
+        started = perf_counter()
         if not settings.api_key:
+            diagnostics.record("generation", started, outcome="failed", reason="model_unconfigured")
             raise HTTPException(503, "Модель пока не подключена. Материалы доступны в базе знаний.")
         try:
             async with asyncio.timeout_at(deadline):
                 service = await asyncio.to_thread(pipeline)
         except TimeoutError:
+            diagnostics.record("knowledge", started, outcome="failed", reason="knowledge_timeout")
             raise HTTPException(503, "База знаний загружается слишком долго. Попробуйте ещё раз.") from None
+        except HTTPException:
+            diagnostics.record("knowledge", started, outcome="failed", reason="knowledge_unavailable")
+            raise
 
         async def stream():
             try:
                 async with asyncio.timeout_at(deadline):
-                    router = OpenRouter(settings, transport)
+                    router = OpenRouter(settings, transport, diagnostics=diagnostics)
                     async with router.http:
                         async for name, data in service.events(chat_request, router, deadline):
+                            if name == "final":
+                                diagnostics.record("chat", started, outcome=data["status"])
                             yield encode_event(name, data)
             except ProviderError as exc:
+                diagnostics.record("chat", started, outcome="failed", reason="provider_error")
                 yield encode_event("error", {"message": str(exc)})
             except TimeoutError:
+                diagnostics.record(diagnostics.phase, started, outcome="failed", reason="request_deadline")
                 yield encode_event("error", {"message": "Не удалось ответить вовремя. Попробуйте уточнить вопрос."})
-            except Exception as exc:
-                logger.error("Chat failed (%s)", type(exc).__name__)
+            except Exception:
+                diagnostics.record(diagnostics.phase, started, outcome="failed", reason="internal_error")
                 yield encode_event("error", {"message": "Не удалось подготовить ответ. Попробуйте ещё раз."})
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={
