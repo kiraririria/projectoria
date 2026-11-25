@@ -35,7 +35,8 @@ def test_evaluation_case_sources_exist_and_types_are_covered(corpus):
 
 
 @pytest.mark.parametrize("case_id", [
-    "scrum-cancel", "kanban-metrics", "gitlab-artifacts", "gost-scope", "context-frontend", "injection-scrum",
+    "scrum-definition", "scrum-cancel", "kanban-metrics", "gitlab-artifacts", "gost-scope", "context-frontend",
+    "injection-scrum",
 ])
 def test_lexical_retrieval_smoke(case_id):
     case = next(row for row in load_cases() if row["id"] == case_id)

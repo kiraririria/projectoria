@@ -96,6 +96,33 @@ def fetch_answer(client, case):
     raise ValueError("Поток завершился без события final")
 
 
+def citations_match(source, excerpt):
+    evidence = source.get("evidence")
+    if not isinstance(excerpt, str) or not isinstance(evidence, list) or not evidence:
+        return False
+    if not all(isinstance(snippet, str) and snippet.strip() for snippet in evidence):
+        return False
+    if "evidence_spans" not in source:
+        text = normalized(excerpt)
+        return all(normalized(snippet) in text for snippet in evidence)
+    spans = source["evidence_spans"]
+    if not isinstance(spans, list) or not spans:
+        return False
+    encoded = excerpt.encode("utf-16-le")
+    selected = set()
+    for span in spans:
+        if not isinstance(span, dict):
+            return False
+        start, end = span.get("start"), span.get("end")
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(encoded) // 2:
+            return False
+        try:
+            selected.add(encoded[2 * start:2 * end].decode("utf-16-le"))
+        except UnicodeDecodeError:
+            return False
+    return selected == set(evidence)
+
+
 def check_answer(client, case, payload):
     sources = payload["sources"]
     labels = {source["label"] for source in sources}
@@ -134,11 +161,8 @@ def check_answer(client, case, payload):
         record = detail.json() if detail.is_success else {}
         if not all(record.get(key) == source[key] for key in SOURCE_FIELDS):
             issues.append(f"Карточка {source['id']} не совпадает с записью в базе")
-        elif not source.get("evidence") or any(
-            not normalized(snippet) or normalized(snippet) not in normalized(record["excerpt"])
-            for snippet in source["evidence"]
-        ):
-            issues.append(f"Выдержка из {source['id']} отсутствует в базе")
+        elif not citations_match(source, record["excerpt"]):
+            issues.append(f"Цитаты или их диапазоны не совпадают с текстом фрагмента {source['id']}")
     missing = missing_groups(case, source_ids)
     if missing:
         issues.append(f"Отсутствуют нужные фрагменты: {missing}")

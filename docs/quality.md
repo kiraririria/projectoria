@@ -14,7 +14,7 @@ python -m evaluation.run
 python -m evaluation.run --wide
 ```
 
-На текущем наборе лексический поиск нашёл 43 из 43 ожидаемых групп по 33 вопросам с обязательными источниками. MRR составил 0,914. Остальные сценарии проверяются по фактическому ответу API.
+На текущем наборе лексический поиск нашёл 44 из 44 ожидаемых групп по 34 вопросам с обязательными источниками. MRR составил 0,917. Остальные сценарии проверяются по фактическому ответу API.
 
 Для проверки гибридного поиска без внешнего API передайте `--onnx-dir` с весами BGE-M3 и токенизатором. `--query-vectors` принимает JSON с готовыми векторами запросов по ID вопросов. [Как подготовить ONNX](implementation.md#векторы-и-модели)
 
@@ -23,7 +23,7 @@ python -m evaluation.run --wide
 Запустите приложение с ключом OpenRouter. Каждый сценарий в этом режиме вызывает `POST /api/chat` и использует бюджет ключа.
 
 ```bash
-python -m evaluation.run --url http://127.0.0.1:8000 --case agile-definition --case scrum-definition-missing --case scrum-team-definition
+python -m evaluation.run --url http://127.0.0.1:8000 --case agile-definition --case scrum-definition --case scrum-team-definition
 python -m evaluation.run --url http://127.0.0.1:8000 --output output/evaluation/live.json
 ```
 

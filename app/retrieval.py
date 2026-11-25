@@ -32,7 +32,8 @@ ALIASES = (
 )
 FOLLOW_UP = re.compile(
     r"^\s*(?:а\s+)?(?:если\b|тогда\b|в таком случае\b|покажи пример\b|что насч[её]т\b|"
-    r"можешь уточнить\b|как (?:это|именно)\b|какие из них\b|кто за это\b|продолжи\b)",
+    r"можешь уточнить\b|как (?:это|именно)\b|какие из них\b|кто за это\b|продолжи\b)|"
+    r"^\s*а\s+(?:кто|когда|где|почему|зачем|сколько)\b",
     re.I,
 )
 REACTION = re.compile(
@@ -66,10 +67,20 @@ def expansions(text: str) -> list[str]:
 
 
 def previous_question(message: str, history: list[Message] | tuple[Message, ...]) -> str:
-    if FOLLOW_UP.search(message) and not REACTION.fullmatch(message):
-        return next((msg.content[:700] for msg in reversed(history)
-                     if msg.role == "user" and not REACTION.fullmatch(msg.content)), "")
-    return ""
+    if not FOLLOW_UP.search(message) or REACTION.fullmatch(message):
+        return ""
+    latest = ""
+    for turn in reversed(history):
+        if turn.role != "user" or REACTION.fullmatch(turn.content):
+            continue
+        if not latest:
+            latest = turn.content
+        if not FOLLOW_UP.search(turn.content):
+            if turn.content == latest:
+                break
+            follow_up = latest[:350]
+            return f"{turn.content[:699 - len(follow_up)]}\n{follow_up}"
+    return latest[:700]
 
 
 def retrieval_query(message: str, history: list[Message] | tuple[Message, ...] = ()) -> str:

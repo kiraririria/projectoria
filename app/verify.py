@@ -31,6 +31,9 @@ NUMBER = re.compile(
     rf"(?P<amount>\d+(?:[.,:/–—-]\d+)*)(?:\s*(?P<date>(?:{MONTH_PATTERN})\b(?:\s+\d{{4}}\b)?)"
     rf"|[ \t–—-]*(?P<unit>[‰%]|(?:{UNIT_PATTERN})(?!\w)))?"
 )
+EXACT_QUANTITY = re.compile(r"\bровно\s+" + NUMBER.pattern)
+BOUNDED_QUANTITY = re.compile(r"\b(?:не более|максимум|не менее|минимум)\s+" + NUMBER.pattern)
+PASSAGE_BREAK = re.compile(r"\n[ \t]*\n|\Z")
 REQUIREMENT = re.compile(r"\b(?:треб\w*|обяз\w*|долж\w*|регламент\w*|приказ\w*)\b", re.I)
 SUBJECT_ALIASES = {"agile": "аджайл", "scrum": "скрам", "kanban": "канбан"}
 INSTRUCTION_LINE = re.compile(
@@ -68,6 +71,11 @@ class Draft(BaseModel):
 class Passage:
     chunk: Chunk
     text: str
+    start: int
+
+    @property
+    def end(self) -> int:
+        return self.start + len(self.text)
 
 
 @dataclass(frozen=True)
@@ -83,14 +91,18 @@ def normalized(text: str) -> str:
 def source_passages(chunks: list[Chunk]) -> dict[str, Passage]:
     passages = {}
     for source_index, chunk in enumerate(chunks, 1):
-        for part_index, block in enumerate(re.split(r"\n[ \t]*\n", chunk.text), 1):
+        offset = 0
+        for part_index, separator in enumerate(PASSAGE_BREAK.finditer(chunk.text), 1):
+            block = chunk.text[offset:separator.start()]
+            start = offset + len(block) - len(block.lstrip())
+            offset = separator.end()
             # Keep full paragraphs and lists together so a condition is not cut off.
             if block.strip() and not any(INSTRUCTION_LINE.search(line) for line in block.splitlines()):
-                passages[f"S{source_index}.{part_index}"] = Passage(chunk, block.strip())
+                passages[f"S{source_index}.{part_index}"] = Passage(chunk, block.strip(), start)
     return passages
 
 
-def find_quote(text: str, quote: str) -> str | None:
+def find_quote(text: str, quote: str) -> re.Match[str] | None:
     words = unicodedata.normalize("NFC", quote).split()
     if len(words) < 2 or len(" ".join(words)) < 12:
         return None
@@ -99,13 +111,12 @@ def find_quote(text: str, quote: str) -> str | None:
         pattern = r"(?<!\w)" + pattern
     if words[-1][-1].isalnum():
         pattern += r"(?!\w)"
-    match = re.search(pattern, text, flags=re.I)
-    return match.group() if match else None
+    return re.search(pattern, text, flags=re.I)
 
 
-def values(text: str, *, include_bare: bool = False) -> set[tuple[str, str]]:
+def values(text: str, *, include_bare: bool = False, pattern: re.Pattern[str] = NUMBER) -> set[tuple[str, str]]:
     result = set()
-    for match in NUMBER.finditer(normalized(text)):
+    for match in pattern.finditer(normalized(text)):
         amount = match["amount"].translate(str.maketrans("–—,", "--."))
         unit = match["date"] or QUANTITY_UNITS.get(match["unit"], match["unit"]) or ""
         result.add((amount, unit))
@@ -153,6 +164,7 @@ def evidence_has_subject(evidence: tuple[Passage, ...], term: str) -> bool:
 
 def verify(
     draft: Draft, passages: dict[str, Passage], *, question: str = "", definition_term: str = "",
+    definition_passage: Passage | None = None,
 ) -> list[VerifiedBlock] | None:
     if draft.status in {"answered", "partial"} and not draft.blocks:
         return None
@@ -172,21 +184,37 @@ def verify(
         evidence = []
         for ref in block.evidence:
             part = passages.get(ref.id)
-            quote = find_quote(part.text, ref.quote) if part else None
+            if part is None:
+                return None
+            quote = find_quote(part.text, ref.quote)
             if quote is None:
                 return None
-            verified_quote = Passage(part.chunk, quote)
+            verified_quote = Passage(part.chunk, quote.group(), part.start + quote.start())
             if verified_quote not in evidence:
                 evidence.append(verified_quote)
         quotes = " ".join(part.text for part in evidence)
         if values(LIST_NUMBER.sub("", block.text)) - (values(quotes, include_bare=True) | user_values):
             return None
+        exact_claims = values(block.text, pattern=EXACT_QUANTITY)
+        if exact_claims:
+            stated_bounds = values(quotes, pattern=BOUNDED_QUANTITY)
+            stated_exact = values(quotes, pattern=EXACT_QUANTITY)
+            if (exact_claims & stated_bounds) - stated_exact:
+                return None
         if INSTITUTION.search(block.text) and REQUIREMENT.search(block.text) and not INSTITUTION.search(quotes):
             return None
         verified.append(VerifiedBlock(block.text, tuple(evidence)))
-    if (definition_term and verified and draft.status in {"answered", "partial"}
-            and not evidence_has_subject(verified[0].evidence, definition_term)):
-        return None
+    if definition_term and verified and draft.status in {"answered", "partial"}:
+        definition_evidence = verified[0].evidence
+        if definition_passage is None:
+            if not evidence_has_subject(definition_evidence, definition_term):
+                return None
+        elif not any(
+            part.chunk.id == definition_passage.chunk.id
+            and definition_passage.start <= part.start and part.end <= definition_passage.end
+            for part in definition_evidence
+        ):
+            return None
     return verified
 
 
@@ -200,14 +228,24 @@ def render_answer(
         for passage in block.evidence:
             chunk = passage.chunk
             if chunk.id not in sources:
-                sources[chunk.id] = dict(knowledge.source(chunk, f"S{len(sources) + 1}"), evidence=[])
+                sources[chunk.id] = dict(
+                    knowledge.source(chunk, f"S{len(sources) + 1}"), evidence=[], evidence_spans=[],
+                )
             source = sources[chunk.id]
             if passage.text not in source["evidence"]:
                 source["evidence"].append(passage.text)
+            # JavaScript string indices count UTF-16 code units.
+            start = len(chunk.text[:passage.start].encode("utf-16-le")) // 2
+            end = start + len(passage.text.encode("utf-16-le")) // 2
+            span = {"start": start, "end": end}
+            if span not in source["evidence_spans"]:
+                source["evidence_spans"].append(span)
             label = f"[{source['label']}]"
             if label not in labels:
                 labels.append(label)
         paragraphs.append(f"{block.text} {' '.join(labels)}")
     if note:
         paragraphs.append(note)
+    for source in sources.values():
+        source["evidence_spans"].sort(key=lambda span: (span["start"], span["end"]))
     return "\n\n".join(paragraphs), list(sources.values())

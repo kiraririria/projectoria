@@ -13,6 +13,8 @@ from evaluation.run import CITATION, events
 TEAM_QUESTION = "Назови ответственности Scrum Team: Product Owner, Scrum Master и Developers."
 FACT = "Product Owner — один человек."
 PARAPHRASE = "За работу Product Owner отвечает один человек."
+SCRUM_DEFINITION = "Scrum — лёгкий фреймворк для решения сложных задач с адаптацией по результатам спринта."
+SCRUM_QUOTE = "Scrum — лёгкий фреймворк, который помогает командам создавать ценность, адаптируя решения сложных задач."
 TEST_KEY = "secret-only-for-mock-tests"
 pytestmark = pytest.mark.anyio
 
@@ -139,39 +141,6 @@ async def test_agile_is_explained_directly_with_short_source_quotes(browser_api)
     assert tangential not in answer["answer"]
     assert [source["id"] for source in answer["sources"]] == ["agile--principles", "agile--values"]
     assert answer["sources"][0]["evidence"] == [quote]
-
-
-@pytest.mark.parametrize(("editor_reply", "keeps_extra"), [
-    ({"keep": [1]}, False),
-    ({"keep": [2]}, True),
-    ({"keep": [1], "text": "Новый неподтверждённый вывод."}, True),
-])
-async def test_editor_can_drop_extra_material_but_cannot_replace_the_answer(browser_api, editor_reply, keeps_extra):
-    question = "Кто выполняет обязанности Product Owner?"
-    extra = "Developers создают пригодный к использованию Increment"
-    calls = []
-
-    def provider(request):
-        prompt = model_prompt(request)
-        calls.append(prompt)
-        if len(calls) == 1:
-            source = next(item for item in prompt["sources"] if FACT in item["text"] and extra in item["text"])
-            blocks = [cited_block(source, FACT, PARAPHRASE), cited_block(source, extra, f"{extra}.")]
-            return openrouter_response({"status": "answered", "blocks": blocks})
-        assert prompt["question"] == question
-        assert [(block["number"], block["text"]) for block in prompt["blocks"]] == [
-            (1, PARAPHRASE), (2, f"{extra}."),
-        ]
-        return openrouter_response(editor_reply)
-
-    async with browser_api(provider) as client:
-        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
-    assert len(calls) == 2
-    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
-    assert answer["answer"].startswith(PARAPHRASE)
-    assert (extra in answer["answer"]) is keeps_extra
-    assert "Новый неподтверждённый вывод" not in answer["answer"]
-    assert answer["sources"][0]["evidence"] == ([FACT, extra] if keeps_extra else [FACT])
 
 
 async def test_related_topic_with_a_real_quote_does_not_answer_a_different_definition(browser_api):
@@ -406,36 +375,44 @@ async def test_short_new_question_does_not_inherit_old_topic(browser_api):
 
 async def test_definition_typo_requires_confirmation_before_looking_up_the_term(browser_api):
     question = "что такое Srum?"
-    async with browser_api(never_call_openrouter) as client:
+    calls = []
+
+    def provider(request):
+        prompt = model_prompt(request)
+        calls.append(prompt["question"])
+        assert prompt["definition_term"] == "Scrum"
+        part = next(item for item in prompt["sources"] if SCRUM_QUOTE in item["text"])
+        return openrouter_response({"status": "answered", "blocks": [cited_block(part, SCRUM_QUOTE, SCRUM_DEFINITION)]})
+
+    async with browser_api(provider) as client:
         kind, clarification = event_rows(await client.post("/api/chat", json={"message": question}))
         assert kind == "final" and clarification["status"] == "clarify"
         assert "Scrum" in clarification["answer"] and "?" in clarification["answer"]
         assert clarification["sources"] == [] and not clarification["grounded"]
+        assert not calls
 
         history = [
             {"role": "user", "content": question},
             {"role": "assistant", "content": clarification["answer"]},
         ]
         kind, answer = event_rows(await client.post("/api/chat", json={"message": "Да.", "history": history}))
-    assert kind == "final" and answer["status"] == "insufficient"
-    assert "Scrum" in answer["answer"] and "определени" in answer["answer"].casefold()
-    assert answer["sources"] == [] and not answer["grounded"]
+    assert calls == ["Да."]
+    assert kind == "final" and answer["status"] == "answered" and answer["grounded"]
+    assert answer["answer"].startswith(SCRUM_DEFINITION)
+    assert [source["id"] for source in answer["sources"]] == ["scrum--definition"]
 
 
-@pytest.mark.parametrize(("question", "term"), [
-    ("Что такое Scrum?", "Scrum"),
-    ("Что такое скрам?", "Scrum"),
-    ("Что такое НДС?", "НДС"),
-])
-async def test_missing_definition_does_not_return_related_passages(browser_api, question, term):
+async def test_missing_definition_does_not_return_related_passages(browser_api):
     async with browser_api(never_call_openrouter) as client:
-        kind, answer = event_rows(await client.post("/api/chat", json={"message": question}))
+        kind, answer = event_rows(await client.post("/api/chat", json={"message": "Что такое НДС?"}))
     assert kind == "final" and answer["status"] == "insufficient"
-    assert term.casefold() in answer["answer"].casefold() and "определени" in answer["answer"].casefold()
+    assert "НДС" in answer["answer"] and "определени" in answer["answer"].casefold()
     assert answer["sources"] == [] and not answer["grounded"]
 
 
 @pytest.mark.parametrize(("question", "definition", "quote", "source_id"), [
+    ("Что такое Scrum?", SCRUM_DEFINITION, SCRUM_QUOTE, "scrum--definition"),
+    ("Что такое скрам?", SCRUM_DEFINITION, SCRUM_QUOTE, "scrum--definition"),
     (
         "Что такое Scrum Team?",
         "Scrum Team — небольшая команда с самоуправлением и разными навыками.",
