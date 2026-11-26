@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { initFeedback } from "./feedback.js";
 
 const byId = (id) => document.getElementById(id);
 const workspace = byId("workspace");
@@ -483,6 +484,7 @@ async function requestReply(question, history, exchange, clearInput = false) {
     failures.delete(chatKey);
     failedTurn = undefined;
     announcement.textContent = "Ответ готов";
+    void feedback.answerCompleted(result);
   } catch (error) {
     const stopped = controller.signal.aborted;
     const restoredDraft = !input.value;
@@ -824,4 +826,5 @@ panel.addEventListener("click", (event) => {
   if (event.target === panel) panel.close();
 });
 window.addEventListener("storage", syncHistory);
+const feedback = initFeedback();
 updateComposer();

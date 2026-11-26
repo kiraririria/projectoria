@@ -15,7 +15,10 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Receive, Scope, Send
 
 from app.config import ROOT, Settings
+from app.alert_middleware import AlertMiddleware
 from app.diagnostics import ChatDiagnostics
+from app.feedback import register_feedback
+from app.notifications import Notifications, RedisStore
 from app.knowledge import Knowledge, load_knowledge, load_vectors
 from app.openrouter import OpenRouter, ProviderError
 from app.pipeline import Pipeline
@@ -91,10 +94,14 @@ class ChatStreamingResponse(StreamingResponse):
 
 
 def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTransport | None = None,
-               knowledge: Knowledge | None = None) -> FastAPI:
+               knowledge: Knowledge | None = None, notification_transport=None, notification_store=None) -> FastAPI:
     settings = settings or Settings.from_env()
     application = FastAPI(title="Проектория", docs_url=None, redoc_url=None, openapi_url=None)
+    notifications = Notifications(settings, store=notification_store or RedisStore(settings, notification_transport),
+                                  transport=notification_transport)
+    application.add_middleware(AlertMiddleware, notifications=notifications)
     application.add_middleware(SecurityHeaders)
+    register_feedback(application, notifications)
 
     @lru_cache(maxsize=1)
     def load_pipeline():
@@ -158,11 +165,16 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
             diagnostics.stage(phase, started, "ok")
         except HTTPException as exc:
             code = {"configuration": "provider_configuration", "knowledge": "knowledge_unavailable"}.get(phase)
+            if code:
+                request.scope["projectoria.alert"] = {"code": code, "request_id": diagnostics.request_id,
+                                                       "stage": phase, "http_status": exc.status_code}
             outcome = "error" if exc.status_code >= 500 else "rejected"
             diagnostics.finish(outcome, stage=phase, http_status=exc.status_code, code=code)
             raise
         except TimeoutError:
             diagnostics.finish("error", stage=phase, http_status=503, code="deadline_exceeded")
+            request.scope["projectoria.alert"] = {"code": "deadline_exceeded", "request_id": diagnostics.request_id,
+                                                   "stage": phase, "http_status": 503}
             raise HTTPException(503, "База знаний загружается слишком долго. Попробуйте ещё раз.") from None
 
         async def stream():
@@ -193,6 +205,9 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                     name, data = "error", {"code": "internal_error",
                                           "message": "Не удалось подготовить ответ. Попробуйте ещё раз."}
 
+                if data.get("code"):
+                    request.scope["projectoria.alert"] = {"code": data["code"], "request_id": diagnostics.request_id,
+                                                           "stage": "generation", "http_status": 200}
                 yield encode_event(name, data)
                 outcome = data["status"] if name == "final" else "error"
                 fields = {"code": data.get("code"), "mode": data.get("retrieval", {}).get("mode")}
