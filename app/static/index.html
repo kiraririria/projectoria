@@ -1,15 +1,14 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-type="software">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f8f7ff">
-  <meta name="description" content="Проектный ассистент для студентов УрФУ. Планирование, командная разработка и документация с проверяемыми источниками.">
-  <title>Проектория — ассистент по проектной работе</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="preload" href="/static/fonts/onest-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/app.css">
-  <script type="module" src="/static/app.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Проектория</title>
+<meta name="description" content="«Проектория» — ассистент для студентов УрФУ по планированию, командной работе и документации.">
+<meta name="theme-color" content="#f3f3f1">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/onest-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css?v=2">
 </head>
 <body>
   <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -35,32 +34,19 @@
     <symbol id="i-feedback" viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 8h8m-8 4h5"/></symbol>
   </svg>
 
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand"><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-compass"/></svg></span><span>Проектория</span></div>
-      <nav class="navigation" aria-label="Разделы">
-        <button class="nav-button nav-new" id="new-chat" type="button" aria-label="Новый диалог" title="Новый диалог" hidden><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Новый диалог</span></button>
-        <button class="nav-button" id="open-history" type="button" aria-label="История диалогов" title="История диалогов"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg><span>История</span></button>
-        <button class="nav-button nav-library" id="open-library" type="button" aria-label="База знаний" title="База знаний"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>База знаний</span></button>
-        <button class="nav-button" id="open-feedback" type="button" aria-label="Обратная связь" title="Обратная связь"><svg class="icon" aria-hidden="true"><use href="#i-feedback"/></svg><span>Обратная связь</span></button>
-      </nav>
+<main class="page workspace" id="workspace">
+  <section class="home" id="welcome" aria-labelledby="welcome-title">
+    <div class="home__mark" id="heroMark" aria-hidden="true"></div>
+    <h1 class="title rise" id="welcome-title">Что уточнить в твоём проекте?</h1>
+    <p class="lead rise">Помогаю студентам УрФУ с планом, работой в команде и документацией — со ссылками на источники.</p>
+    <div class="starters" id="suggestions" aria-label="Примеры вопросов">
+      <button class="chip suggestion" type="button" data-question="Что нужно определить на старте проекта и как зафиксировать его границы?">Что определить на старте проекта?</button>
+      <button class="chip suggestion" type="button" data-question="Если команда выбрала Scrum, за что отвечают Product Owner, Scrum Master и Developers?">Кто за что отвечает в Scrum?</button>
+      <button class="chip suggestion" type="button" data-question="Какие разделы технического задания на программу перечисляет ГОСТ 19.201-78?">Что включить в ТЗ по ГОСТ?</button>
+      <button class="chip suggestion" type="button" data-question="Какие проверки могут быть обязательны для слияния pull request в GitHub?">Какие проверки нужны для слияния?</button>
     </div>
-  </header>
-
-  <main class="workspace" id="workspace">
-    <section class="welcome" id="welcome" aria-labelledby="welcome-title">
-      <div class="compass" aria-hidden="true">
-        <div class="compass-aura"></div>
-        <div class="compass-dots"></div>
-        <div class="orbit orbit-outer"><i></i></div>
-        <div class="orbit orbit-inner"><i></i></div>
-        <div class="orbit orbit-cross"><i></i></div>
-        <div class="compass-core"><span class="compass-star"></span><span class="compass-counterweight"></span></div>
-      </div>
-      <p class="welcome-context">Для студентов УрФУ</p>
-      <h1 id="welcome-title">С чего начнём проект?</h1>
-      <p class="welcome-lead">Спрашивайте о планировании, командной работе и документации. В ответах можно открыть выдержки из базы знаний.</p>
-    </section>
+    <button class="btn btn--glass btn--small rise" id="shuffle" type="button">Другие вопросы</button>
+  </section>
 
     <section class="thread" id="thread" aria-labelledby="thread-title" hidden>
       <h1 class="sr-only" id="thread-title">Диалог с Проекторией</h1>
@@ -79,42 +65,49 @@
       <button class="text-button" id="feedback-nudge-open" type="button">Оставить отзыв</button>
       <button class="icon-button" id="feedback-nudge-close" type="button" aria-label="Закрыть предложение оценки">×</button>
     </section>
-    <div class="dock" id="dock">
-      <form class="composer" id="composer" aria-label="Отправить вопрос">
-        <label class="sr-only" for="question">Вопрос о проекте</label>
-        <textarea id="question" name="question" rows="1" maxlength="3000" enterkeyhint="send" placeholder="Спросите о своём проекте…"></textarea>
-        <button class="send" id="send" type="submit" aria-label="Отправить вопрос" title="Отправить вопрос" disabled><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg></button>
-        <button class="send stop" id="stop" type="button" aria-label="Остановить ответ" title="Остановить ответ" hidden><svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg></button>
-      </form>
-      <p class="composer-help" id="composer-help"><kbd>Enter</kbd> отправляет, <kbd>Shift</kbd> + <kbd>Enter</kbd> переносит строку</p>
-    </div>
 
-    <section class="suggestions" id="suggestions" aria-labelledby="suggestions-title">
-      <h2 id="suggestions-title">Примеры вопросов</h2>
-      <div class="suggestion-grid">
-        <button class="suggestion" type="button" data-question="Что нужно определить на старте проекта и как зафиксировать его границы?">
-          <span class="suggestion-icon tone-violet"><svg class="icon" aria-hidden="true"><use href="#i-plan"/></svg></span>
-          <span class="suggestion-copy"><strong>План проекта</strong><span>Что уточнить на старте?</span></span>
-          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+  <footer class="composer" id="dock">
+    <div class="notice" id="notice" role="status" hidden></div>
+    <div class="composer__wrap">
+      <button class="nav-button" id="navButton" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="Разделы">
+        <span class="nav-button__glow" aria-hidden="true"><canvas id="navGlow"></canvas></span>
+        <span id="navMark"></span>
+      </button>
+      <form class="composer__row" id="composer" autocomplete="off" aria-label="Отправить вопрос">
+        <div class="composer__field-wrap">
+          <textarea id="question" class="composer__field" name="question" placeholder=" " rows="1" enterkeyhint="send" maxlength="3000" aria-label="Вопрос о проекте"></textarea>
+          <div class="composer__hint" id="hint" aria-hidden="true">Спроси <span class="cycle" id="hintCycle">про план проекта</span></div>
+        </div>
+        <button class="composer__send" id="send" type="submit" aria-label="Отправить вопрос" disabled>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9"/></svg>
         </button>
-        <button class="suggestion" type="button" data-question="Если команда выбрала Scrum, за что отвечают Product Owner, Scrum Master и Developers?">
-          <span class="suggestion-icon tone-teal"><svg class="icon" aria-hidden="true"><use href="#i-team"/></svg></span>
-          <span class="suggestion-copy"><strong>Scrum и роли</strong><span>Если команда выбрала Scrum</span></span>
-          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
+        <button class="composer__send" id="stop" type="button" aria-label="Остановить ответ" title="Остановить ответ" hidden>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6" y="6" width="8" height="8" rx="1"/></svg>
         </button>
-        <button class="suggestion" type="button" data-question="Какие разделы технического задания на программу перечисляет ГОСТ 19.201-78?">
-          <span class="suggestion-icon tone-peach"><svg class="icon" aria-hidden="true"><use href="#i-document"/></svg></span>
-          <span class="suggestion-copy"><strong>Техническое задание</strong><span>Что включить в ТЗ по ГОСТ?</span></span>
-          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
-        </button>
-        <button class="suggestion" type="button" data-question="Какие проверки могут быть обязательны для слияния pull request в GitHub?">
-          <span class="suggestion-icon tone-blue"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg></span>
-          <span class="suggestion-copy"><strong>Git и CI/CD</strong><span>Как проверять изменения в команде?</span></span>
-          <svg class="icon suggestion-arrow" aria-hidden="true"><use href="#i-insert"/></svg>
-        </button>
-      </div>
-    </section>
-  </main>
+      </form>
+    </div>
+    <p class="caption composer__note" id="composer-help">Сверяй важные выводы с источниками.</p>
+
+    <div class="menu glass" id="menu" role="menu" aria-label="Разделы" hidden>
+      <button class="menu__item" role="menuitem" type="button" id="new-chat" data-action="new">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4.5v11M4.5 10h11"/></svg><span>Новый разговор</span>
+      </button>
+      <button class="menu__item" role="menuitem" type="button" id="open-history" data-action="chats">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 6.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3 2.5v-2.5h0a1.5 1.5 0 0 1-1.5-1.5z"/></svg><span>Разговоры</span>
+      </button>
+      <button class="menu__item" role="menuitem" type="button" id="open-library" data-action="docs">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3.5h5.5L15 7v9.5H6z"/><path d="M11.5 3.5V7H15M8.5 10.5h4M8.5 13h4"/></svg><span>Документы базы</span>
+      </button>
+      <button class="menu__item" role="menuitem" type="button" id="open-feedback" data-action="feedback">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 4.5h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 2.5v-2.5h0a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z"/><path d="M7 8h6m-6 2.5h4"/></svg><span>Обратная связь</span>
+      </button>
+      <button class="menu__item" role="menuitem" type="button" id="open-about" data-action="about">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="M10 9.2v4M10 6.6v.01"/></svg><span>Как это работает</span>
+      </button>
+    </div>
+    <div class="flyout glass" id="flyout" aria-label="Недавние разговоры" hidden></div>
+  </footer>
+</main>
 
   <dialog class="panel" id="panel" aria-labelledby="panel-title">
     <div class="panel-head">
@@ -144,5 +137,8 @@
       <p id="feedback-status" role="status" aria-live="polite"></p>
     </form>
   </dialog>
+<script src="/static/mark.js?v=2"></script>
+<script src="/static/trail.js?v=2"></script>
+<script type="module" src="/static/app.js?v=2"></script>
 </body>
 </html>

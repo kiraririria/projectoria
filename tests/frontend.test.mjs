@@ -94,6 +94,7 @@ function browser(fetch, { storage = browserStorage(), useLocks = true } = {}) {
     navigator: useLocks ? { locks } : {},
     renderMarkdown: (text) => new Element(document, text),
     initFeedback: () => ({ answerCompleted(result) { feedbackAnswers.push(result); } }),
+    initInterface: () => ({ setBusy() {}, revealAnswer() {}, refreshRecent() {} }),
   });
   const get = (id) => document.getElementById(id);
   function send(message) {

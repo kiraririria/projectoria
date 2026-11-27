@@ -1,5 +1,6 @@
 import { renderMarkdown } from "./markdown.js";
 import { initFeedback } from "./feedback.js";
+import { initInterface } from "./interface.js";
 
 const byId = (id) => document.getElementById(id);
 const workspace = byId("workspace");
@@ -164,13 +165,13 @@ function updateComposer() {
   sendButton.hidden = Boolean(activeRequest);
   stopButton.hidden = !activeRequest;
   newButton.disabled = Boolean(activeRequest);
+  appearance.setBusy(Boolean(activeRequest));
 }
 
 function showThread(visible) {
   byId("welcome").hidden = visible;
   byId("suggestions").hidden = visible;
   byId("thread").hidden = !visible;
-  newButton.hidden = !visible;
   workspace.classList.toggle("in-chat", visible);
 }
 
@@ -222,7 +223,7 @@ function notice(message, isError = false) {
   return note;
 }
 
-function renderAnswer(result) {
+function renderAnswer(result, animate = false) {
   const content = document.createDocumentFragment();
   const heading = element("h2", "reply-heading");
   const mark = element("span", "brand-mark");
@@ -235,6 +236,7 @@ function renderAnswer(result) {
     && typeof source.title === "string" && typeof source.section === "string") : [];
   const citationButtons = new Map(sources.map((source) => [source.label, () => citation(source)]));
   rich.append(renderMarkdown(result.answer, citationButtons));
+  if (animate) appearance.revealAnswer(rich);
   content.append(heading, rich);
 
   if (sources.length) {
@@ -479,7 +481,7 @@ async function requestReply(question, history, exchange, clearInput = false) {
     const focusAfterReceive = document.activeElement === stopButton;
     stopButton.disabled = true;
     if (focusAfterReceive && !panel.open) input.focus({ preventScroll: true });
-    reply.replaceChildren(renderAnswer(result));
+    reply.replaceChildren(renderAnswer(result, true));
     await saveTurn(question, result);
     failures.delete(chatKey);
     failedTurn = undefined;
@@ -796,6 +798,25 @@ function syncHistory(event) {
   if (conversation.removed) activeRequest?.abort();
   resetRemovedConversation();
   if (panel.open && panelView === "history") renderHistory(false);
+  appearance.refreshRecent();
+}
+
+function openAbout() {
+  preparePanel("about", "Как получается ответ");
+  const steps = element("ol", "steps-about");
+  for (const [title, description] of [
+    ["Вопрос", "Спросите о планировании, командной работе или документации."],
+    ["Поиск", "Проектория подбирает подходящие разделы базы знаний."],
+    ["Ответ", "Ассистент формирует ответ по найденным материалам и сверяет цитаты."],
+    ["Источники", "Нажмите на сноску, чтобы прочитать выдержку и открыть первоисточник."],
+  ]) {
+    const item = element("li");
+    const text = element("div");
+    text.append(element("b", "", title), element("span", "", description));
+    item.append(text);
+    steps.append(item);
+  }
+  panelBody.append(steps);
 }
 
 composer.addEventListener("submit", submitQuestion);
@@ -806,17 +827,11 @@ input.addEventListener("keydown", (event) => {
     composer.requestSubmit();
   }
 });
-for (const suggestion of document.querySelectorAll("[data-question]")) {
-  suggestion.addEventListener("click", () => {
-    input.value = suggestion.dataset.question;
-    updateComposer();
-    input.focus();
-  });
-}
 stopButton.addEventListener("click", () => activeRequest?.abort());
 newButton.addEventListener("click", () => openConversation());
 byId("open-history").addEventListener("click", () => renderHistory());
 byId("open-library").addEventListener("click", () => openLibrary());
+byId("open-about").addEventListener("click", openAbout);
 byId("panel-close").addEventListener("click", () => panel.close());
 panel.addEventListener("close", () => {
   ++panelRevision;
@@ -827,4 +842,12 @@ panel.addEventListener("click", (event) => {
 });
 window.addEventListener("storage", syncHistory);
 const feedback = initFeedback();
+const appearance = initInterface({
+  readHistory,
+  openConversation,
+  submitExample(question) {
+    input.value = question;
+    composer.requestSubmit();
+  },
+});
 updateComposer();
